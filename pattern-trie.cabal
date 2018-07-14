@@ -63,7 +63,6 @@ test-suite doctests
     build-depends:
         base
       , doctest >= 0.16
-      , unordered-containers >= 0.2
 
 benchmark bench
     type: exitcode-stdio-1.0

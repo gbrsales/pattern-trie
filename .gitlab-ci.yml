@@ -14,10 +14,12 @@ before_script:
 test:8.4:
   image: haskell:8.4
   script:
+    - cabal --store-dir=$STORE_DIR new-build
     - cabal --store-dir=$STORE_DIR new-test
 
 test:8.2:
   image: haskell:8.2
   script:
+    - cabal --store-dir=$STORE_DIR new-build
     - cabal --store-dir=$STORE_DIR new-test
 
