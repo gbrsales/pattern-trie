@@ -2,6 +2,7 @@
 -- License, v. 2.0. If a copy of the MPL was not distributed with this
 -- file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TupleSections #-}
@@ -14,6 +15,9 @@ import Data.Foldable
 import Data.Functor.Identity
 import Data.Functor.Compose
 import Data.List (inits)
+#if __GLASGOW_HASKELL__ < 804
+import Data.Semigroup
+#endif
 import Data.Sequence (Seq (..))
 import Data.Trie.Pattern (Trie, Pattern, Matcher)
 import Test.Tasty
