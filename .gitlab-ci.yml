@@ -9,6 +9,7 @@ cache:
 
 before_script:
   - apt -qq update
+  - cabal update
 
 test:8.4:
   image: haskell:8.4
