@@ -22,19 +22,19 @@
 --     chunks.
 --   * Matching a 'Str'ing on a trie can 'Capture' parts of the string.
 --
--- These characteristics hint at the primary intended use-case, which are
--- situations where keys have a "natural" decomposition into chunks and the same
+-- These characteristics hint at the primary intended use-case, whereby
+-- keys have a "natural" decomposition into chunks and the same
 -- chunks are heavily shared by different keys, e.g. as in directory trees.
 -- A pattern trie allows to associate values with such patterns, whereby a
 -- single value can essentially be looked up by all strings matching a pattern,
--- thereby capturing part of it. Such a trie can thus form the basis of e.g. a
+-- thereby capturing parts of it. Such a trie can thus form the basis of e.g. a
 -- web server routing mechanism for dispatching requests to handler functions
--- together with captured parameters.
+-- together with captured parameters, based on the request path in the URL.
 --
 -- __Strictness:__
 -- A 'Trie' is strict in the spine as well as the values (WHNF).
 --
--- __Ordering:__ The order of keys and elements is unspecified.
+-- __Ordering:__ The order of keys and thus elements is unspecified.
 -- No particular order may be assumed by folds and traversals, whose
 -- combining operations should hence be commutative.
 --
@@ -42,26 +42,29 @@
 --
 -- >>> :set -XOverloadedStrings
 --
--- >>> let p1 = mempty |> EqStr "foo"  |> EqStr "bar" |> EqStr "baz"
--- >>> let p2 = mempty |> EqStr "foo"  |> AnyStr      |> EqStr "red"
--- >>> let p3 = mempty |> EqStr "some" |> AnyStr      |> EqStr "red"
+-- >>> let p1 = mempty |> EqStr "home" |> EqStr "alice" |> EqStr "tmp"
+-- >>> let p2 = mempty |> EqStr "home" |> AnyStr        |> EqStr "music"
+-- >>> let p3 = mempty |> EqStr "data" |> AnyStr        |> EqStr "books"
 --
 -- >>> let trie = fromAssocList $ [p1,p2,p3] `zip` [1..] :: Trie Int
 --
--- >>> match ["foo","bar","baz"] trie
+-- >>> match ["home","alice","tmp"] trie
 -- Just (1,fromList [])
 --
--- >>> match ["foo","other","red"] trie
--- Just (2,fromList [Capture {captured = "other"}])
---
--- >>> match ["some","other","red"] trie
--- Just (3,fromList [Capture {captured = "other"}])
---
--- >>> matchPrefix ["some","other","blue"] trie
+-- >>> match ["home","alice","music"] trie
 -- Nothing
 --
--- >>> matchPrefix ["some","other","red","thing"] trie
--- Just (3,fromList [Capture {captured = "other"}],["thing"])
+-- >>> match ["home","bob","music"] trie
+-- Just (2,fromList [Capture {captured = "bob"}])
+--
+-- >>> match ["data","bob","books"] trie
+-- Just (3,fromList [Capture {captured = "bob"}])
+--
+-- >>> matchPrefix ["data","bob","tmp"] trie
+-- Nothing
+--
+-- >>> matchPrefix ["data","bob","books","sicp"] trie
+-- Just (3,fromList [Capture {captured = "bob"}],["sicp"])
 --
 module Data.Trie.Pattern
     ( Trie, value
