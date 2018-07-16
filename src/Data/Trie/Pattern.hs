@@ -38,39 +38,57 @@
 -- No particular order may be assumed by folds and traversals, whose
 -- combining operations should hence be commutative.
 --
--- __Example Usage:__
+-- __Example:__
 --
 -- >>> :set -XOverloadedStrings
 --
 -- >>> let p1 = mempty |> EqStr "home" |> EqStr "alice" |> EqStr "tmp"
 -- >>> let p2 = mempty |> EqStr "home" |> AnyStr        |> EqStr "music"
--- >>> let p3 = mempty |> EqStr "data" |> AnyStr        |> EqStr "books"
+-- >>> let p3 = mempty |> EqStr "data" |> EqStr "bob"   |> EqStr "books"
+-- >>> let p4 = mempty |> EqStr "data" |> AnyStr        |> EqStr "books"
+-- >>> let p5 = mempty |> EqStr "data" |> AnyStr        |> EqStr "books" |> EqStr "sicp"
 --
--- >>> let trie = fromAssocList $ [p1,p2,p3] `zip` [1..] :: Trie Int
+-- >>> let trie = fromAssocList $ [p1,p2,p3,p4,p5] `zip` [1..] :: Trie Int
 --
 -- >>> match ["home","alice","tmp"] trie
 -- Just (1,fromList [])
 --
--- >>> match ["home","alice","music"] trie
+-- >>> match ["home","bob","tmp"] trie
 -- Nothing
+--
+-- >>> match ["home","alice","music"] trie
+-- Just (2,fromList [Capture {captured = "alice"}])
 --
 -- >>> match ["home","bob","music"] trie
 -- Just (2,fromList [Capture {captured = "bob"}])
 --
 -- >>> match ["data","bob","books"] trie
--- Just (3,fromList [Capture {captured = "bob"}])
+-- Just (3,fromList [])
 --
--- >>> matchPrefix ["data","bob","tmp"] trie
--- Nothing
+-- >>> match ["data","alice","books"] trie
+-- Just (4,fromList [Capture {captured = "alice"}])
 --
--- >>> matchPrefix ["data","bob","books","sicp"] trie
--- Just (3,fromList [Capture {captured = "bob"}],["sicp"])
+-- >>> match ["data","alice","books","sicp"] trie
+-- Just (5,fromList [Capture {captured = "alice"}])
+--
+-- >>> match ["data","bob","books","sicp"] trie
+-- Just (5,fromList [Capture {captured = "bob"}])
+--
+-- >>> matchPrefix ["data","alice","books","wonderland"] trie
+-- Just (4,fromList [Capture {captured = "alice"}],["wonderland"])
+--
+-- >>> matchPrefix ["data","bob","books","wonderland"] trie
+-- Just (4,fromList [Capture {captured = "bob"}],["wonderland"])
+--
+-- >>> let (t,c,s) = matchPrefixTrie ["data","bob","books","wonderland"] trie
+-- >>> (value t, c, s)
+-- (Just 4,fromList [Capture {captured = "bob"}],["wonderland"])
 --
 module Data.Trie.Pattern
     ( Trie, value
 
     -- * Patterns
-    , Pattern, Str, Matcher (..), apply, (|>)
+    , Pattern, Str, Matcher (..), apply, capture, (|>)
     , Capture, captured
 
     -- * List conversion
@@ -142,9 +160,9 @@ instance Foldable Trie where
   null _                        = False
   {-# INLINE null #-}
 
--- | /Note/: If two tries have a value attached to the same 'Pattern'
--- (i.e. to the same key), the value of the left trie is preserved in the
--- combined trie.
+-- | /Note (left preference)/: If two tries have a value attached to
+-- the same 'Pattern' (i.e. to the same key), then @t1 <> t2@ preserves
+-- the value of @t1@.
 instance Semigroup (Trie a) where
     a <> b =  Trie (HashMap.unionWith (<>) (strtries a) (strtries b))
                    (vartrie a <> vartrie b)
@@ -152,7 +170,7 @@ instance Semigroup (Trie a) where
 
     stimes = stimesIdempotent
 
--- | /Note/: @mappend = (<>)@. See the semigroup instance.
+-- | /Note/: @mappend = (<>)@. See the Semigroup instance.
 instance Monoid (Trie a) where
     mempty  = Trie mempty Nothing Nothing
     mappend = (<>)
@@ -162,13 +180,24 @@ instance Monoid (Trie a) where
 
 -- | A pattern is a sequence of 'Matcher's and serves as a key
 -- in a pattern trie.
+--
+-- __Overlapping Patterns:__
+-- Two patterns @p@ and @p'@ with @p /= p'@, are /overlapping/ if there exists
+-- an input 'Str'ing that is (fully) 'match'ed by both patterns. In that case,
+-- for the input string in question, the preference is given by the partial
+-- order @EqStr > AnyStr@ on the competing matchers, i.e. towards the more
+-- specific pattern. For an input string with a proper prefix matching the
+-- overlapping patterns, the preference is reversed, i.e. towards the more
+-- general pattern. That is, in the latter case a 'match' naturally yields
+-- 'Nothing', whereas 'matchPrefix' will match the more general pattern,
+-- yielding the associated value and excess input.
 type Pattern = Seq Matcher
 
 -- | A (chunked) input string to 'match' on a 'Pattern' in a trie.
 --
 -- /Note:/ Input strings can be infinite. Since the tries are always finite,
 -- an infinite input string is only consumed until either a match has been
--- found or the relevant paths in the trie have been exhausted.
+-- found or the applicable paths in the trie have been exhaustively searched.
 type Str = [ByteString]
 
 -- | A captured chunk of an input 'Str'ing.
@@ -179,11 +208,6 @@ newtype Capture = Capture { captured :: ByteString }
 -- | A 'Matcher' is applied on a single chunk of an input 'Str'ing
 -- while looking for a 'match' and either /succeeds/ or /fails/. If it succeeds,
 -- it may additionally capture (part of) the chunk.
---
--- Two patterns are /overlapping/ if they are not equal and there exists
--- an input string that is matched by a prefix of both patterns.
--- In that case, the preference between the competing matchers is given by
--- the partial order @EqStr > AnyStr@.
 data Matcher
     -- | Match and capture an arbitrary chunk of an input string.
     = AnyStr
@@ -199,20 +223,28 @@ apply = go Seq.empty
   where
     go !cs ss Empty = (Empty, cs, ss)
     go !cs [] ps    = (ps   , cs, [])
-    go !cs x@(s:ss) y@(p :<| ps) = case p of
+    go !cs str@(s:ss) pat@(p :<| ps) = case p of
         AnyStr   -> go (cs |> Capture s) ss ps
         EqStr s' -> if s == s'
             then go cs ss ps
-            else (y, cs, x)
+            else (pat, cs, str)
+
+-- | Like 'apply' but only returns the captures.
+capture :: Str -> Pattern -> Seq Capture
+capture s p = case apply s p of
+    (_, c, _) -> c
+{-# INLINE capture #-}
 
 -----------------------------------------------------------------------------
 -- List conversion
 
+-- | Create a pattern trie from a list of patterns and associated values.
 fromAssocList :: [(Pattern, a)] -> Trie a
 fromAssocList = foldl' add mempty
   where
     add t (p, a) = insert p a t
 
+-- | Create a list of patterns and associated values from a pattern trie.
 toAssocList :: Trie a -> [(Pattern, a)]
 toAssocList t = foldrWithKey (\p a l -> (p, a) : l) [] t
 
@@ -287,35 +319,51 @@ lookup p t = case lookupPrefixTrie p t of
 -----------------------------------------------------------------------------
 -- Matching
 
+-- | A choice point.
+data Choice a = Choice !(Seq Capture) Str !(Trie a)
+
+choice :: Seq Capture -> Str -> Maybe (Trie a) -> [Choice a] -> [Choice a]
+choice _  _   Nothing  cps = cps
+choice cs str (Just t) cps = Choice cs str t : cps
+{-# INLINE choice #-}
+
 -- | Lookup the trie rooted at the longest matching prefix of the input string
 -- for which there are values in the trie, returning it together with
 -- any captured parts and the remaining (unmatched) suffix of the input string.
 matchPrefixTrie :: Str -> Trie a -> (Trie a, Seq Capture, Str)
-matchPrefixTrie = go mempty
+matchPrefixTrie = go Seq.empty []
   where
-    go !cs []      t = (t, cs, [])
-    go !cs (s:str) t = case HashMap.lookup s (strtries t) of
-        Just t' -> go cs str t'
+    go !cs _   []     t = (t, cs, [])
+    go !cs cps (s:ss) t = case HashMap.lookup s (strtries t) of
+        Just t' ->
+            let cps' = choice (cs |> Capture s) ss (vartrie t) cps
+            in go cs cps' ss t'
         Nothing -> case vartrie t of
-            Just t' -> go (cs |> Capture s) str t'
-            Nothing -> (t, cs, s:str)
+            Just t' -> go (cs |> Capture s) cps ss t'
+            Nothing -> case cps of
+                []                         -> (t, cs, s:ss)
+                (Choice cs' ss' t' : cps') -> go cs' cps' ss' t'
 
 -- | Lookup the value for the longest matching prefix of the input string,
 -- returning it together with any captured parts and the remaining
 -- (unmatched) suffix of the input string. If no prefix of the input
 -- string matches any pattern in the trie, the result is 'Nothing'.
 matchPrefix :: Str -> Trie a -> Maybe (a, Seq Capture, Str)
-matchPrefix = go Seq.empty Nothing
+matchPrefix = go Seq.empty [] Nothing
   where
-    go !cs r str t =
+    go !cs cps r str t =
         let r' = ((,cs,str) <$> value t) <|> r
         in case str of
-            []       -> r'
-            (s:str') -> case HashMap.lookup s (strtries t) of
-                Just t' -> go cs r' str' t'
+            []     -> r'
+            (s:ss) -> case HashMap.lookup s (strtries t) of
+                Just t' ->
+                    let cps' = choice (cs |> Capture s) ss (vartrie t) cps
+                    in go cs cps' r' ss t'
                 Nothing -> case vartrie t of
-                    Nothing -> r'
-                    Just t' -> go (cs |> Capture s) r' str' t'
+                    Just t' -> go (cs |> Capture s) cps r' ss t'
+                    Nothing -> case cps of
+                        []                         -> r'
+                        (Choice cs' ss' t' : cps') -> go cs' cps' r' ss' t'
 
 -- | Lookup the value for an input string by matching it against the patterns of
 -- a trie. The value of the matching pattern, if any, is returned together with

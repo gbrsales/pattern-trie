@@ -19,7 +19,7 @@ import Data.List (inits)
 import Data.Semigroup
 #endif
 import Data.Sequence (Seq (..))
-import Data.Trie.Pattern (Trie, Pattern, Matcher)
+import Data.Trie.Pattern
 import Test.Tasty
 import Test.Tasty.QuickCheck
 
@@ -45,6 +45,8 @@ tests = testGroup "Data.Trie.Pattern"
         , testProperty "Composition" checkTraversableComp
         ]
     , testProperty "match" checkMatch
+    , testProperty "match (overlapping)" checkMatchOverlapping
+    , testProperty "match (partial overlap)" checkMatchPartialOverlap
     , testProperty "lookup" checkLookup
     , testProperty "insert" checkInsert
     , testProperty "from/to list" checkListConversion
@@ -81,8 +83,31 @@ checkMatch = forAll genPatterns check
         let t = Trie.fromAssocList patterns
         in conjoin . flip map patterns $ \(p, a) ->
             forAll (genStr p) $ \s ->
-                let (_, c, _) = Trie.apply s p
+                let c = Trie.capture s p
                 in Trie.match s t == Just (a, c)
+
+checkMatchOverlapping :: Property
+checkMatchOverlapping = forAll genPatternWithStr $ \(p, s) ->
+    let -- Overlaps with 'p' w.r.t 's'
+        p' = Seq.fromList (map Trie.EqStr s)
+        t  = Trie.fromAssocList [(p, 1), (p', 2)] :: Trie Int
+    in
+        Trie.match s t == Just (2, Seq.empty)
+
+-- Partially overlapping patterns (i.e. those with an overlapping
+-- proper prefix) are not ambiguous but require backtracking via
+-- choice points, since the more specific path is explored first.
+checkMatchPartialOverlap :: Property
+checkMatchPartialOverlap = forAll genPatternWithStr $ \(p, s) ->
+    let -- A match for ../a/c requires backtracking from ../a/b
+        -- to the choice point before ../a
+        p'  = p |> EqStr "a" |> EqStr "b" -- explored first
+        p'' = p |> AnyStr    |> EqStr "c" -- matches
+        s'  = s ++ ["a","c"]
+        t   = Trie.fromAssocList [(p', 1), (p'', 2)] :: Trie Int
+        c   = Trie.capture s' p''
+    in
+        Trie.match s' t == Just (2, c)
 
 checkLookup :: Property
 checkLookup = forAll genPatterns check
@@ -126,19 +151,12 @@ checkMatchPrefix = forAll genPatternWithStr $ \(p, s) ->
         check ((px, a), sx) ~(t, props) =
             let
                 s' = drop (length sx) s
-                cs = captures (Trie.apply sx px)
+                cs = Trie.capture sx px
                 ok = Trie.matchPrefix s t == Just (a, cs, s')
             in
                 (Trie.delete px t, ok : props)
     in
         conjoin (snd (foldr check (trie, []) inputs))
-  where
-    genPatternWithStr = do
-        p <- genPattern ""
-        s <- genStr p
-        return (p, s)
-
-    captures (_, cs, _) = cs
 
 -------------------------------------------------------------------------------
 -- Properties of modifications
@@ -171,7 +189,7 @@ checkAdjust = forAll genTrie $ \t ->
        Trie.delete p t  == Trie.delete p t'
 
 -------------------------------------------------------------------------------
--- Semigroup and monoid properties for tries
+-- Semigroup and monoid properties of tries
 
 checkSemigroupLeftPref :: Property
 checkSemigroupLeftPref = forAll genTrie $ \t ->
@@ -236,12 +254,21 @@ genPattern prefix = do
     s <- vectorOf n genMatcher
     return $ Seq.fromList (Trie.EqStr prefix : s)
 
+-- Generate an arbitrary pattern together with a matching
+-- input string.
+genPatternWithStr :: Gen (Pattern, Str)
+genPatternWithStr = do
+    p <- genPattern ""
+    s <- genStr p
+    return (p, s)
+
 genMatcher :: Gen Matcher
 genMatcher = oneof [str, var]
   where
     str = Trie.EqStr <$> genByteString
     var = pure Trie.AnyStr
 
+-- Generate 1-100 non-overlapping patterns
 genPatterns :: Gen [(Pattern, Int)]
 genPatterns = do
     n <- choose (1, 100)
