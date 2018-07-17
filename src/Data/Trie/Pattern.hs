@@ -335,8 +335,8 @@ type MatchNextR r a = Trie a -> Seq Capture -> Str -> r -> r
 matchIter :: MatchNextR r a -> r -> Str -> Trie a -> r
 matchIter nextR = go Seq.empty []
   where
-    go !cs !cps !r str t =
-        let r' = nextR t cs str r
+    go !cs !cps r str t =
+        let !r' = nextR t cs str r
         in case str of
             []     -> r'
             (s:s') -> case HashMap.lookup s (strtries t) of
