@@ -170,7 +170,7 @@ instance Semigroup (Trie a) where
 
     stimes = stimesIdempotent
 
--- | /Note/: @mappend = (<>)@. See the Semigroup instance.
+-- | /Note/: @mappend = (<>)@.
 instance Monoid (Trie a) where
     mempty  = Trie mempty Nothing Nothing
     mappend = (<>)
@@ -222,11 +222,11 @@ apply :: Str -> Pattern -> (Pattern, Seq Capture, Str)
 apply = go Seq.empty
   where
     go !cs ss Empty = (Empty, cs, ss)
-    go !cs [] ps    = (ps   , cs, [])
-    go !cs str@(s:ss) pat@(p :<| ps) = case p of
-        AnyStr   -> go (cs |> Capture s) ss ps
-        EqStr s' -> if s == s'
-            then go cs ss ps
+    go !cs [] p     = (p    , cs, [])
+    go !cs str@(s:s') pat@(m :<| p') = case m of
+        AnyStr   -> go (cs |> Capture s) s' p'
+        EqStr ss -> if s == ss
+            then go cs s' p'
             else (pat, cs, str)
 
 -- | Like 'apply' but only returns the captures.
@@ -256,56 +256,63 @@ insert :: Pattern -> a -> Trie a -> Trie a
 insert p !a = go p
   where
     go Empty            = modVal (const (Just a))
-    go (AnyStr  :<| ms) = modVar ((Just $!) . go ms . fromMaybe mempty)
-    go (EqStr s :<| ms) = modStr $ \m ->
+    go (AnyStr  :<| p') = modVar ((Just $!) . go p' . fromMaybe mempty)
+    go (EqStr s :<| p') = modStr $ \m ->
         let t' = fromMaybe mempty (HashMap.lookup s m)
-        in HashMap.insert s (go ms t') m
+        in HashMap.insert s (go p' t') m
 
 -- | Update the value of the given pattern in the trie, if it exists.
 adjust :: Pattern -> (a -> a) -> Trie a -> Trie a
 adjust p f = go p
   where
     go Empty            = modVal (f <$!>)
-    go (AnyStr  :<| ms) = modVar (go ms <$!>)
-    go (EqStr s :<| ms) = modStr (HashMap.adjust (go ms) s)
+    go (AnyStr  :<| p') = modVar (go p' <$!>)
+    go (EqStr s :<| p') = modStr (HashMap.adjust (go p') s)
 
 -- | Remove the value for the given pattern from the trie, if it exists.
 delete :: Pattern -> Trie a -> Trie a
 delete p = go p
   where
     go Empty            = modVal (const Nothing)
-    go (AnyStr  :<| ms) = modVar (maybe Nothing (go' ms))
-    go (EqStr s :<| ms) = modStr (HashMap.update (go' ms) s)
+    go (AnyStr  :<| p') = modVar (maybe Nothing (go' p'))
+    go (EqStr s :<| p') = modStr (HashMap.update (go' p') s)
 
-    go' ms t = case go ms t of
+    go' p' t = case go p' t of
         t' | null t' -> Nothing
         t'           -> Just t'
 
 -----------------------------------------------------------------------------
 -- Lookups
 
+type LookupNextR r a = Trie a -> Pattern -> r -> r
+
+lookupIter :: LookupNextR r a -> r -> Pattern -> Trie a -> r
+lookupIter nextR = go
+  where
+    go r p t =
+        let r' = nextR t p r
+        in case p of
+            Empty          -> r'
+            AnyStr  :<| p' -> maybe r' (go r' p') (vartrie t)
+            EqStr s :<| p' -> maybe r' (go r' p') (HashMap.lookup s (strtries t))
+{-# INLINE lookupIter #-}
+
 -- | Lookup the trie rooted at the longest prefix of a pattern for which
 -- there are values in the trie, returning it together with the remaining
 -- suffix of the pattern.
 lookupPrefixTrie :: Pattern -> Trie a -> (Trie a, Pattern)
-lookupPrefixTrie p t = case p of
-    Empty              -> (t, Empty)
-    x@(AnyStr  :<| ps) -> maybe (t, x) (lookupPrefixTrie ps) (vartrie t)
-    x@(EqStr s :<| ps) -> maybe (t, x) (lookupPrefixTrie ps) (HashMap.lookup s (strtries t))
+lookupPrefixTrie p t = lookupIter nextR (t, Empty) p t
+  where
+    nextR t' p' = const (t', p')
 
 -- | Lookup the value for the longest matching prefix of a pattern,
 -- returning it together with the remaining suffix of the pattern.
 -- If there is no value in the trie for any prefix of the given pattern,
 -- the result is 'Nothing'.
 lookupPrefix :: Pattern -> Trie a -> Maybe (a, Pattern)
-lookupPrefix = go Nothing
+lookupPrefix p t = lookupIter nextR Nothing p t
   where
-    go r p t =
-        let r' = ((,p) <$> value t) <|> r
-        in case p of
-            Empty          -> r'
-            AnyStr  :<| p' -> maybe r' (go r' p') (vartrie t)
-            EqStr s :<| p' -> maybe r' (go r' p') (HashMap.lookup s (strtries t))
+    nextR t' p' r = ((,p') <$> value t') <|> r
 
 -- | Lookup the value of a pattern.
 -- If there is no value in the trie for the given pattern, the result is
@@ -327,43 +334,42 @@ choice _  _   Nothing  cps = cps
 choice cs str (Just t) cps = Choice cs str t : cps
 {-# INLINE choice #-}
 
+type MatchNextR r a = Trie a -> Seq Capture -> Str -> r -> r
+
+matchIter :: MatchNextR r a -> r -> Str -> Trie a -> r
+matchIter nextR = go Seq.empty []
+  where
+    go !cs cps r str t =
+        let r' = nextR t cs str r
+        in case str of
+            []     -> r'
+            (s:s') -> case HashMap.lookup s (strtries t) of
+                Just t' ->
+                    let cps' = choice (cs |> Capture s) s' (vartrie t) cps
+                    in go cs cps' r' s' t'
+                Nothing -> case vartrie t of
+                    Just t' -> go (cs |> Capture s) cps r' s' t'
+                    Nothing -> case cps of
+                        []                         -> r'
+                        (Choice cs' ss' t' : cps') -> go cs' cps' r' ss' t'
+{-# INLINE matchIter #-}
+
 -- | Lookup the trie rooted at the longest matching prefix of the input string
 -- for which there are values in the trie, returning it together with
 -- any captured parts and the remaining (unmatched) suffix of the input string.
 matchPrefixTrie :: Str -> Trie a -> (Trie a, Seq Capture, Str)
-matchPrefixTrie = go Seq.empty []
+matchPrefixTrie s t = matchIter nextR (t, Seq.empty, []) s t
   where
-    go !cs _   []     t = (t, cs, [])
-    go !cs cps (s:ss) t = case HashMap.lookup s (strtries t) of
-        Just t' ->
-            let cps' = choice (cs |> Capture s) ss (vartrie t) cps
-            in go cs cps' ss t'
-        Nothing -> case vartrie t of
-            Just t' -> go (cs |> Capture s) cps ss t'
-            Nothing -> case cps of
-                []                         -> (t, cs, s:ss)
-                (Choice cs' ss' t' : cps') -> go cs' cps' ss' t'
+    nextR t' cs' s' = const (t', cs', s')
 
 -- | Lookup the value for the longest matching prefix of the input string,
 -- returning it together with any captured parts and the remaining
 -- (unmatched) suffix of the input string. If no prefix of the input
 -- string matches any pattern in the trie, the result is 'Nothing'.
 matchPrefix :: Str -> Trie a -> Maybe (a, Seq Capture, Str)
-matchPrefix = go Seq.empty [] Nothing
+matchPrefix s t = matchIter nextR Nothing s t
   where
-    go !cs cps r str t =
-        let r' = ((,cs,str) <$> value t) <|> r
-        in case str of
-            []     -> r'
-            (s:ss) -> case HashMap.lookup s (strtries t) of
-                Just t' ->
-                    let cps' = choice (cs |> Capture s) ss (vartrie t) cps
-                    in go cs cps' r' ss t'
-                Nothing -> case vartrie t of
-                    Just t' -> go (cs |> Capture s) cps r' ss t'
-                    Nothing -> case cps of
-                        []                         -> r'
-                        (Choice cs' ss' t' : cps') -> go cs' cps' r' ss' t'
+    nextR t' cs s' r = ((, cs, s') <$> value t') <|> r
 
 -- | Lookup the value for an input string by matching it against the patterns of
 -- a trie. The value of the matching pattern, if any, is returned together with
