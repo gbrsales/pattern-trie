@@ -88,7 +88,8 @@ module Data.Trie.Pattern
     ( Trie, value
 
     -- * Patterns
-    , Pattern, Str, Matcher (..), apply, capture, (|>)
+    , Pattern, Str, Matcher (..)
+    , apply, capture, (|>)
     , Capture, captured
 
     -- * List conversion
@@ -290,7 +291,7 @@ lookupIter :: LookupNextR r a -> r -> Pattern -> Trie a -> r
 lookupIter nextR = go
   where
     go r p t =
-        let r' = nextR t p r
+        let !r' = nextR t p r
         in case p of
             Empty          -> r'
             AnyStr  :<| p' -> maybe r' (go r' p') (vartrie t)
@@ -312,7 +313,7 @@ lookupPrefixTrie p t = lookupIter nextR (t, Empty) p t
 lookupPrefix :: Pattern -> Trie a -> Maybe (a, Pattern)
 lookupPrefix p t = lookupIter nextR Nothing p t
   where
-    nextR t' p' r = ((,p') <$> value t') <|> r
+    nextR t' p' r = ((,p') <$!> value t') <|> r
 
 -- | Lookup the value of a pattern.
 -- If there is no value in the trie for the given pattern, the result is
@@ -326,29 +327,28 @@ lookup p t = case lookupPrefixTrie p t of
 -----------------------------------------------------------------------------
 -- Matching
 
--- | A choice point.
+-- | A choice point for backtracking to alternative branches.
 data Choice a = Choice !(Seq Capture) Str !(Trie a)
-
-choice :: Seq Capture -> Str -> Maybe (Trie a) -> [Choice a] -> [Choice a]
-choice _  _   Nothing  cps = cps
-choice cs str (Just t) cps = Choice cs str t : cps
-{-# INLINE choice #-}
 
 type MatchNextR r a = Trie a -> Seq Capture -> Str -> r -> r
 
 matchIter :: MatchNextR r a -> r -> Str -> Trie a -> r
 matchIter nextR = go Seq.empty []
   where
-    go !cs cps r str t =
+    go !cs !cps !r str t =
         let r' = nextR t cs str r
         in case str of
             []     -> r'
             (s:s') -> case HashMap.lookup s (strtries t) of
-                Just t' ->
-                    let cps' = choice (cs |> Capture s) s' (vartrie t) cps
-                    in go cs cps' r' s' t'
+                Just t' -> case vartrie t of
+                    Nothing  -> go cs cps r' s' t'
+                    Just t'' ->
+                        -- Add a new choice point
+                        let cps' = Choice (cs |> Capture s) s' t'' : cps
+                        in go cs cps' r' s' t'
                 Nothing -> case vartrie t of
                     Just t' -> go (cs |> Capture s) cps r' s' t'
+                    -- Continue at the last choice point, if any
                     Nothing -> case cps of
                         []                         -> r'
                         (Choice cs' ss' t' : cps') -> go cs' cps' r' ss' t'
@@ -369,7 +369,7 @@ matchPrefixTrie s t = matchIter nextR (t, Seq.empty, []) s t
 matchPrefix :: Str -> Trie a -> Maybe (a, Seq Capture, Str)
 matchPrefix s t = matchIter nextR Nothing s t
   where
-    nextR t' cs s' r = ((, cs, s') <$> value t') <|> r
+    nextR t' cs s' r = ((,cs,s') <$!> value t') <|> r
 
 -- | Lookup the value for an input string by matching it against the patterns of
 -- a trie. The value of the matching pattern, if any, is returned together with
