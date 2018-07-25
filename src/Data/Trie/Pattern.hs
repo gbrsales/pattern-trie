@@ -15,7 +15,8 @@
 --   * Keys are 'Pattern's composed of 'Matcher's and hence a single key
 --     can match multiple input 'Str'ings.
 --   * Keys are understood as being composed of (indivisible) chunks of
---     'ByteString's. More precisely, every chunk of an input 'Str'ing is
+--     strings of type @s@ (typically instantiated to either 'Text' or
+--     'ByteString'). More precisely, every chunk of an input 'Str'ing is
 --     tested against a 'Matcher' of a 'Pattern' in full. As a result,
 --     pattern tries usually end up less compact than more general tries,
 --     since sharing of prefixes is limited to the granularity of these
@@ -42,13 +43,15 @@
 --
 -- >>> :set -XOverloadedStrings
 --
+-- >>> import Data.ByteString (ByteString)
+--
 -- >>> let p1 = mempty |> EqStr "home" |> EqStr "alice" |> EqStr "tmp"
 -- >>> let p2 = mempty |> EqStr "home" |> AnyStr        |> EqStr "music"
 -- >>> let p3 = mempty |> EqStr "data" |> EqStr "bob"   |> EqStr "books"
 -- >>> let p4 = mempty |> EqStr "data" |> AnyStr        |> EqStr "books"
 -- >>> let p5 = mempty |> EqStr "data" |> AnyStr        |> EqStr "books" |> EqStr "sicp"
 --
--- >>> let trie = fromAssocList $ [p1,p2,p3,p4,p5] `zip` [1..] :: Trie Int
+-- >>> let trie = fromAssocList $ [p1,p2,p3,p4,p5] `zip` [1..] :: Trie ByteString Int
 --
 -- >>> match ["home","alice","tmp"] trie
 -- Just (1,fromList [])
@@ -123,21 +126,24 @@ import Control.DeepSeq (NFData)
 import Control.Monad ((<$!>))
 import Data.ByteString (ByteString)
 import Data.Foldable
+import Data.Hashable
 import Data.List (foldl')
 import Data.HashMap.Strict (HashMap)
 import Data.Maybe (fromMaybe)
 import Data.Semigroup
 import Data.Sequence (Seq (..), (|>))
+import Data.Text (Text)
 import Prelude hiding (lookup)
 
 import qualified Data.HashMap.Strict as HashMap
 import qualified Data.Sequence       as Seq
 import qualified Data.Traversable    as Traversable
 
--- | A mapping from 'Pattern's to values of type 'a'.
-data Trie a = Trie
-    { strtries :: !(HashMap ByteString (Trie a))
-    , vartrie  :: !(Maybe (Trie a))
+-- | An unordered map from 'Pattern's of strings of type @s@ to values
+-- of type @a@.
+data Trie s a = Trie
+    { strtries :: !(HashMap s (Trie s a))
+    , vartrie  :: !(Maybe (Trie s a))
     , value    :: !(Maybe a)
         -- ^ The value at the root of the trie, i.e.
         --
@@ -147,13 +153,13 @@ data Trie a = Trie
     } deriving stock (Eq, Show, Read, Generic)
       deriving anyclass NFData
 
-instance Traversable Trie where
+instance Traversable (Trie s) where
     traverse f = traverseWithKey (const f)
 
-instance Functor Trie where
+instance Functor (Trie s) where
     fmap = Traversable.fmapDefault
 
-instance Foldable Trie where
+instance Foldable (Trie s) where
   foldMap = Traversable.foldMapDefault
 
   null (Trie a Nothing Nothing) = HashMap.null a
@@ -163,7 +169,7 @@ instance Foldable Trie where
 -- | /Note (left preference)/: If two tries have a value attached to
 -- the same 'Pattern' (i.e. to the same key), then @t1 <> t2@ preserves
 -- the value of @t1@.
-instance Semigroup (Trie a) where
+instance (Eq s, Hashable s) => Semigroup (Trie s a) where
     a <> b =  Trie (HashMap.unionWith (<>) (strtries a) (strtries b))
                    (vartrie a <> vartrie b)
                    (value a <|> value b)
@@ -171,15 +177,15 @@ instance Semigroup (Trie a) where
     stimes = stimesIdempotent
 
 -- | /Note/: @mappend = (<>)@.
-instance Monoid (Trie a) where
+instance (Eq s, Hashable s) => Monoid (Trie s a) where
     mempty  = Trie mempty Nothing Nothing
     mappend = (<>)
 
 -----------------------------------------------------------------------------
 -- Patterns
 
--- | A pattern is a sequence of 'Matcher's and serves as a key
--- in a pattern trie.
+-- | A pattern is a sequence of 'Matcher's on (chunks of) strings of type @s@
+-- and serves as a key in a pattern trie.
 --
 -- __Overlapping Patterns:__
 -- Two patterns @p@ and @p'@ with @p /= p'@, are /overlapping/ if there exists
@@ -191,34 +197,34 @@ instance Monoid (Trie a) where
 -- general pattern. That is, in the latter case a 'match' naturally yields
 -- 'Nothing', whereas 'matchPrefix' will match the more general pattern,
 -- yielding the associated value and excess input.
-type Pattern = Seq Matcher
+type Pattern s = Seq (Matcher s)
 
 -- | A (chunked) input string to 'match' on a 'Pattern' in a trie.
 --
 -- /Note:/ Input strings can be infinite. Since the tries are always finite,
 -- an infinite input string is only consumed until either a match has been
 -- found or the applicable paths in the trie have been exhaustively searched.
-type Str = [ByteString]
+type Str s = [s]
 
 -- | A captured chunk of an input 'Str'ing.
-newtype Capture = Capture { captured :: ByteString }
+newtype Capture s = Capture { captured :: s }
     deriving stock (Eq, Ord, Show, Read, Generic)
     deriving anyclass NFData
 
 -- | A 'Matcher' is applied on a single chunk of an input 'Str'ing
 -- while looking for a 'match' and either /succeeds/ or /fails/. If it succeeds,
 -- it may 'Capture' the chunk.
-data Matcher
+data Matcher s
     -- | Match and capture an arbitrary chunk of an input string.
     = AnyStr
     -- | Match a chunk of an input string exactly, capturing nothing.
-    | EqStr !ByteString
+    | EqStr !s
     deriving (Eq, Show, Read)
 
 -- | Directly apply a 'Str'ing to a 'Pattern', returning the unmatched
 -- suffix of the pattern together with the captured chunks and the
 -- remaining (unmatched) suffix of the input string.
-apply :: Str -> Pattern -> (Pattern, Seq Capture, Str)
+apply :: Eq s => Str s -> Pattern s -> (Pattern s, Seq (Capture s), Str s)
 apply = go Seq.empty
   where
     go !cs ss Empty = (Empty, cs, ss)
@@ -230,7 +236,7 @@ apply = go Seq.empty
             else (pat, cs, str)
 
 -- | Like 'apply' but only returns the captures.
-capture :: Str -> Pattern -> Seq Capture
+capture :: Eq s => Str s -> Pattern s -> Seq (Capture s)
 capture s p = case apply s p of
     (_, c, _) -> c
 {-# INLINE capture #-}
@@ -248,7 +254,7 @@ capture s p = case apply s p of
 -- @
 -- uncapture (capture s p) p == s
 -- @
-uncapture :: Seq Capture -> Pattern -> Str
+uncapture :: Seq (Capture s) -> Pattern s -> Str s
 uncapture = go []
   where
     go !str _          Empty           = str
@@ -260,20 +266,22 @@ uncapture = go []
 -- List conversion
 
 -- | Create a pattern trie from a list of patterns and associated values.
-fromAssocList :: [(Pattern, a)] -> Trie a
+fromAssocList :: (Eq s, Hashable s) => [(Pattern s, a)] -> Trie s a
 fromAssocList = foldl' add mempty
   where
     add t (p, a) = insert p a t
+{-# INLINE fromAssocList #-}
 
 -- | Create a list of patterns and associated values from a pattern trie.
-toAssocList :: Trie a -> [(Pattern, a)]
+toAssocList :: (Eq s, Hashable s) => Trie s a -> [(Pattern s, a)]
 toAssocList t = foldrWithKey (\p a l -> (p, a) : l) [] t
+{-# INLINE toAssocList #-}
 
 -----------------------------------------------------------------------------
 -- Updates
 
 -- | Insert the value for the given pattern into the trie.
-insert :: Pattern -> a -> Trie a -> Trie a
+insert :: (Eq s, Hashable s) => Pattern s -> a -> Trie s a -> Trie s a
 insert p !a = go p
   where
     go Empty            = modVal (const (Just a))
@@ -281,17 +289,21 @@ insert p !a = go p
     go (EqStr s :<| p') = modStr $ \m ->
         let t' = fromMaybe mempty (HashMap.lookup s m)
         in HashMap.insert s (go p' t') m
+{-# SPECIALISE insert :: BPattern -> a -> BTrie a -> BTrie a #-}
+{-# SPECIALISE insert :: TPattern -> a -> TTrie a -> TTrie a #-}
 
 -- | Update the value of the given pattern in the trie, if it exists.
-adjust :: Pattern -> (a -> a) -> Trie a -> Trie a
+adjust :: (Eq s, Hashable s) => Pattern s -> (a -> a) -> Trie s a -> Trie s a
 adjust p f = go p
   where
     go Empty            = modVal (f <$!>)
     go (AnyStr  :<| p') = modVar (go p' <$!>)
     go (EqStr s :<| p') = modStr (HashMap.adjust (go p') s)
+{-# SPECIALISE adjust :: BPattern -> (a -> a) -> BTrie a -> BTrie a #-}
+{-# SPECIALISE adjust :: TPattern -> (a -> a) -> TTrie a -> TTrie a #-}
 
 -- | Remove the value for the given pattern from the trie, if it exists.
-delete :: Pattern -> Trie a -> Trie a
+delete :: (Eq s, Hashable s) => Pattern s -> Trie s a -> Trie s a
 delete p = go p
   where
     go Empty            = modVal (const Nothing)
@@ -301,13 +313,15 @@ delete p = go p
     go' p' t = case go p' t of
         t' | null t' -> Nothing
         t'           -> Just t'
+{-# SPECIALISE delete :: BPattern -> BTrie a -> BTrie a #-}
+{-# SPECIALISE delete :: TPattern -> TTrie a -> TTrie a #-}
 
 -----------------------------------------------------------------------------
 -- Lookups
 
-type LookupNextR r a = Trie a -> Pattern -> r -> r
+type LookupNextR r s a = Trie s a -> Pattern s -> r -> r
 
-lookupIter :: LookupNextR r a -> r -> Pattern -> Trie a -> r
+lookupIter :: (Eq s, Hashable s) => LookupNextR r s a -> r -> Pattern s -> Trie s a -> r
 lookupIter nextR = go
   where
     go r p t =
@@ -321,24 +335,28 @@ lookupIter nextR = go
 -- | Lookup the trie rooted at the longest prefix of a pattern for which
 -- there are values in the trie, returning it together with the remaining
 -- suffix of the pattern.
-lookupPrefixTrie :: Pattern -> Trie a -> (Trie a, Pattern)
+lookupPrefixTrie :: (Eq s, Hashable s) => Pattern s -> Trie s a -> (Trie s a, Pattern s)
 lookupPrefixTrie p t = lookupIter nextR (t, Empty) p t
   where
     nextR t' p' = const (t', p')
+{-# SPECIALISE lookupPrefixTrie :: BPattern -> BTrie a -> (BTrie a, BPattern) #-}
+{-# SPECIALISE lookupPrefixTrie :: TPattern -> TTrie a -> (TTrie a, TPattern) #-}
 
 -- | Lookup the value for the longest matching prefix of a pattern,
 -- returning it together with the remaining suffix of the pattern.
 -- If there is no value in the trie for any prefix of the given pattern,
 -- the result is 'Nothing'.
-lookupPrefix :: Pattern -> Trie a -> Maybe (a, Pattern)
+lookupPrefix :: (Eq s, Hashable s) => Pattern s -> Trie s a -> Maybe (a, Pattern s)
 lookupPrefix p t = lookupIter nextR Nothing p t
   where
     nextR t' p' r = ((,p') <$!> value t') <|> r
+{-# SPECIALISE lookupPrefix :: BPattern -> BTrie a -> Maybe (a, BPattern) #-}
+{-# SPECIALISE lookupPrefix :: TPattern -> TTrie a -> Maybe (a, TPattern) #-}
 
 -- | Lookup the value of a pattern.
 -- If there is no value in the trie for the given pattern, the result is
 -- 'Nothing'.
-lookup :: Pattern -> Trie a -> Maybe a
+lookup :: (Eq s, Hashable s) => Pattern s -> Trie s a -> Maybe a
 lookup p t = case lookupPrefixTrie p t of
     (t', Empty) -> value t'
     _           -> Nothing
@@ -348,11 +366,11 @@ lookup p t = case lookupPrefixTrie p t of
 -- Matching
 
 -- | A choice point for backtracking to alternative branches.
-data Choice a = Choice !(Seq Capture) Str !(Trie a)
+data Choice s a = Choice !(Seq (Capture s)) (Str s) !(Trie s a)
 
-type MatchNextR r a = Trie a -> Seq Capture -> Str -> r -> r
+type MatchNextR r s a = Trie s a -> Seq (Capture s) -> Str s -> r -> r
 
-matchIter :: MatchNextR r a -> r -> Str -> Trie a -> r
+matchIter :: (Eq s, Hashable s) => MatchNextR r s a -> r -> Str s -> Trie s a -> r
 matchIter nextR = go Seq.empty []
   where
     go !cs !cps r str t =
@@ -377,25 +395,29 @@ matchIter nextR = go Seq.empty []
 -- | Lookup the trie rooted at the longest matching prefix of the input string
 -- for which there are values in the trie, returning it together with
 -- any captured parts and the remaining (unmatched) suffix of the input string.
-matchPrefixTrie :: Str -> Trie a -> (Trie a, Seq Capture, Str)
+matchPrefixTrie :: (Eq s, Hashable s) => Str s -> Trie s a -> (Trie s a, Seq (Capture s), Str s)
 matchPrefixTrie s t = matchIter nextR (t, Seq.empty, []) s t
   where
     nextR t' cs' s' = const (t', cs', s')
+{-# SPECIALISE matchPrefixTrie :: BStr -> BTrie a -> (BTrie a, Seq BCapture, BStr) #-}
+{-# SPECIALISE matchPrefixTrie :: TStr -> TTrie a -> (TTrie a, Seq TCapture, TStr) #-}
 
 -- | Lookup the value for the longest matching prefix of the input string,
 -- returning it together with any captured parts and the remaining
 -- (unmatched) suffix of the input string. If no prefix of the input
 -- string matches any pattern in the trie, the result is 'Nothing'.
-matchPrefix :: Str -> Trie a -> Maybe (a, Seq Capture, Str)
+matchPrefix :: (Eq s, Hashable s) => Str s -> Trie s a -> Maybe (a, Seq (Capture s), Str s)
 matchPrefix s t = matchIter nextR Nothing s t
   where
     nextR t' cs s' r = ((,cs,s') <$!> value t') <|> r
+{-# SPECIALISE matchPrefix :: BStr -> BTrie a -> Maybe (a, Seq BCapture, BStr) #-}
+{-# SPECIALISE matchPrefix :: TStr -> TTrie a -> Maybe (a, Seq TCapture, TStr) #-}
 
 -- | Lookup the value for an input string by matching it against the patterns of
 -- a trie. The value of the matching pattern, if any, is returned together with
 -- any captured parts of the input string. If the input string does not match
 -- any pattern in the trie, the result is 'Nothing'.
-match :: Str -> Trie a -> Maybe (a, Seq Capture)
+match :: (Eq s, Hashable s) => Str s -> Trie s a -> Maybe (a, Seq (Capture s))
 match s t = case matchPrefixTrie s t of
     (t', cs, []) -> (,cs) <$> value t'
     _            -> Nothing
@@ -404,7 +426,7 @@ match s t = case matchPrefixTrie s t of
 -----------------------------------------------------------------------------
 -- Folds and traversals with keys (patterns)
 
-traverseWithKey :: Applicative f => (Pattern -> a -> f b) -> Trie a -> f (Trie b)
+traverseWithKey :: Applicative f => (Pattern s -> a -> f b) -> Trie s a -> f (Trie s b)
 traverseWithKey f t = go mempty t
   where
     go !p (Trie vals vars v) =
@@ -413,24 +435,34 @@ traverseWithKey f t = go mempty t
             f3 = traverse (f p) v
         in Trie <$> f1 <*> f2 <*> f3
 
-foldMapWithKey :: Monoid m => (Pattern -> a -> m) -> Trie a -> m
+foldMapWithKey :: Monoid m => (Pattern s -> a -> m) -> Trie s a -> m
 foldMapWithKey f = getConst . traverseWithKey (\p -> Const . f p)
 
-foldrWithKey :: (Pattern -> a -> b -> b) -> b -> Trie a -> b
+foldrWithKey :: (Pattern s -> a -> b -> b) -> b -> Trie s a -> b
 foldrWithKey f b t = appEndo (foldMapWithKey (\p -> Endo . f p) t) b
 
 -----------------------------------------------------------------------------
 -- Utilities
 
-modStr :: (HashMap ByteString (Trie a) -> HashMap ByteString (Trie a)) -> Trie a -> Trie a
+modStr :: (HashMap s (Trie s a) -> HashMap s (Trie s a)) ->  Trie s a -> Trie s a
 modStr f t = t { strtries = f (strtries t) }
 {-# INLINE modStr #-}
 
-modVar :: (Maybe (Trie a) -> Maybe (Trie a)) -> Trie a -> Trie a
+modVar :: (Maybe (Trie s a) -> Maybe (Trie s a)) -> Trie s a -> Trie s a
 modVar f t = t { vartrie = f (vartrie t) }
 {-# INLINE modVar #-}
 
-modVal :: (Maybe a -> Maybe a) -> Trie a -> Trie a
+modVal :: (Maybe a -> Maybe a) -> Trie s a -> Trie s a
 modVal f t = t { value = f (value t) }
 {-# INLINE modVal #-}
+
+type BTrie a = Trie ByteString a
+type BStr = Str ByteString
+type BCapture = Capture ByteString
+type BPattern = Pattern ByteString
+
+type TTrie a = Trie Text a
+type TStr = Str Text
+type TCapture = Capture Text
+type TPattern = Pattern Text
 

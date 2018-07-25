@@ -1,5 +1,6 @@
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Main where
 
@@ -7,7 +8,10 @@ import Control.DeepSeq
 import Criterion.Main
 import Data.ByteString (ByteString)
 import Data.Foldable
+import Data.Hashable
 import Data.Sequence (Seq)
+import Data.Text (Text)
+import Data.Text.Encoding (decodeUtf8)
 import Data.Trie.Pattern
 
 import qualified Data.Sequence as Seq
@@ -17,15 +21,21 @@ import qualified Data.Trie     as BST
 
 main :: IO ()
 main = defaultMain
-    [ bgroup "pattern-trie"
-        [ env (genStaticPTrie staticKeys) $
-            bench "match (static)" . ptrieMatch
-        , env (genPTrie captureKeys) $
-            bench "match (capture)" . ptrieMatch
+    [ bgroup "pattern-trie (ByteString)"
+        [ env (genStaticPTrie staticBKeys) $
+            bench "match (static)" . ptrieBMatch
+        , env (genPTrie captureBKeys) $
+            bench "match (capture)" . ptrieBMatch
+        ]
+    , bgroup "pattern-trie (Text)"
+        [ env (genStaticPTrie staticTKeys) $
+            bench "match (static)" . ptrieTMatch
+        , env (genPTrie captureTKeys) $
+            bench "match (capture)" . ptrieTMatch
         ]
 #if __GLASGOW_HASKELL__ < 804
     , bgroup "bytestring-trie"
-        [ env (genBSTrie staticKeys) $
+        [ env (genBSTrie staticBKeys) $
             bench "lookup" . bstrieLookup
         ]
 #endif
@@ -34,26 +44,38 @@ main = defaultMain
 ------------------------------------------------------------------------------
 -- pattern-trie
 
-genStaticPTrie :: [[ByteString]] -> IO (Trie Int)
+-- Generators
+
+genStaticPTrie :: (Eq s, Hashable s) => [Str s] -> IO (Trie s Int)
 genStaticPTrie keys = genPTrie (map mkPat keys)
   where
     mkPat = Seq.fromList . map EqStr
 
-genPTrie :: [Pattern] -> IO (Trie Int)
+genPTrie :: (Eq s, Hashable s) => [Pattern s] -> IO (Trie s Int)
 genPTrie pats = return $! build pats
   where
     build = fromAssocList . (`zip` [1..])
 
-ptrieMatch :: Trie Int -> Benchmarkable
-ptrieMatch t = nf run chunks
+-- Benchmarks
+
+ptrieBMatch :: Trie ByteString Int -> Benchmarkable
+ptrieBMatch t = nf run bchunks
   where
-    run :: Str -> Maybe (Int, Seq Capture)
+    run :: Str ByteString -> Maybe (Int, Seq (Capture ByteString))
+    run s = match s t
+
+ptrieTMatch :: Trie Text Int -> Benchmarkable
+ptrieTMatch t = nf run tchunks
+  where
+    run :: Str Text -> Maybe (Int, Seq (Capture Text))
     run s = match s t
 
 ------------------------------------------------------------------------------
 -- bytestring-trie
 
 #if __GLASGOW_HASKELL__ < 804
+
+-- Generators
 
 newtype BSTrie a = BSTrie (BST.Trie a)
 
@@ -65,8 +87,10 @@ genBSTrie keys = return $! build keys
   where
     build = BSTrie . BST.fromList . (`zip` [1..]) . map mconcat
 
+-- Benchmarks
+
 bstrieLookup :: BSTrie Int -> Benchmarkable
-bstrieLookup (BSTrie t) = nf run (mconcat chunks)
+bstrieLookup (BSTrie t) = nf run (mconcat bchunks)
   where
     run :: ByteString -> Maybe Int
     run s = BST.lookup s t
@@ -76,11 +100,20 @@ bstrieLookup (BSTrie t) = nf run (mconcat chunks)
 ------------------------------------------------------------------------------
 -- Test keys
 
-staticKeys :: [[ByteString]]
-staticKeys = genKeys chunks
+staticBKeys :: [[ByteString]]
+staticBKeys = genKeys bchunks
 
-captureKeys :: [Pattern]
-captureKeys = map Seq.fromList (genKeys matchers)
+staticTKeys :: [[Text]]
+staticTKeys = genKeys tchunks
+
+captureBKeys :: [Pattern ByteString]
+captureBKeys = captureKeys bchunks
+
+captureTKeys :: [Pattern Text]
+captureTKeys = captureKeys tchunks
+
+captureKeys :: [s] -> [Pattern s]
+captureKeys chunks = map Seq.fromList (genKeys matchers)
   where
     -- Replace the last chunk with a "capture", so it can appear at every
     -- position of a generated key.
@@ -102,9 +135,9 @@ genKeys l = mapM next [0..(length l - 1)]
   where
     next i = drop i l
 
--- (Static) chunks from which the keys of the tries are built up.
-chunks :: [ByteString]
-chunks =
+-- (Static) ByteString chunks from which the keys of the tries are built up.
+bchunks :: [ByteString]
+bchunks =
     [ "abcde"
     , "bcdef"
     , "cdefg"
@@ -112,4 +145,7 @@ chunks =
     , "efghi"
     , "fghij"
     ]
+
+tchunks :: [Text]
+tchunks = map decodeUtf8 bchunks
 

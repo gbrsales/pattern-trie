@@ -39,6 +39,8 @@ library
       , bytestring           >= 0.10  && < 1.0
       , containers           >= 0.5.7 && < 1.0
       , deepseq              >= 1.4.3 && < 2.0
+      , hashable
+      , text
       , unordered-containers >= 0.2   && < 1.0
 
 test-suite tests
@@ -81,7 +83,9 @@ benchmark bench
       , criterion
       , containers
       , deepseq
+      , hashable
       , pattern-trie
+      , text
 
     if impl(ghc < 8.4)
         build-depends: bytestring-trie

@@ -63,7 +63,7 @@ tests = testGroup "Data.Trie.Pattern"
 -- Basic properties
 
 checkNull :: Property
-checkNull = once (null (mempty :: Trie Int))
+checkNull = once (null (mempty :: Trie ByteString Int))
     .&&. (forAll genTrie (not . null))
 
 checkValue :: Property
@@ -100,7 +100,7 @@ checkMatchOverlapping :: Property
 checkMatchOverlapping = forAll genPatternWithStr $ \(p, s) ->
     let -- Overlaps with 'p' w.r.t 's'
         p' = Seq.fromList (map Trie.EqStr s)
-        t  = Trie.fromAssocList [(p, 1), (p', 2)] :: Trie Int
+        t  = Trie.fromAssocList [(p, 1), (p', 2)] :: Trie ByteString Int
     in
         Trie.match s t == Just (2, Seq.empty)
 
@@ -114,7 +114,7 @@ checkMatchPartialOverlap = forAll genPatternWithStr $ \(p, s) ->
         p'  = p |> EqStr "a" |> EqStr "b" -- explored first
         p'' = p |> AnyStr    |> EqStr "c" -- matches
         s'  = s ++ ["a","c"]
-        t   = Trie.fromAssocList [(p', 1), (p'', 2)] :: Trie Int
+        t   = Trie.fromAssocList [(p', 1), (p'', 2)] :: Trie ByteString Int
         c   = Trie.capture s' p''
     in
         Trie.match s' t == Just (2, c)
@@ -255,13 +255,13 @@ genByteString :: Gen ByteString
 genByteString = C8.pack <$> listOf1 arbitraryASCIIChar
 
 -- Generate an input string matching a given pattern.
-genStr :: Pattern -> Gen Trie.Str
+genStr :: Pattern ByteString -> Gen (Str ByteString)
 genStr p = mapM gen (toList p)
   where
     gen  Trie.AnyStr   = genByteString
     gen (Trie.EqStr s) = pure s
 
-genPattern :: ByteString -> Gen Pattern
+genPattern :: ByteString -> Gen (Pattern ByteString)
 genPattern prefix = do
     n <- choose (1, 10)
     s <- vectorOf n genMatcher
@@ -269,25 +269,25 @@ genPattern prefix = do
 
 -- Generate an arbitrary pattern together with a matching
 -- input string.
-genPatternWithStr :: Gen (Pattern, Str)
+genPatternWithStr :: Gen (Pattern ByteString, Str ByteString)
 genPatternWithStr = do
     p <- genPattern ""
     s <- genStr p
     return (p, s)
 
-genMatcher :: Gen Matcher
+genMatcher :: Gen (Matcher ByteString)
 genMatcher = oneof [str, var]
   where
     str = Trie.EqStr <$> genByteString
     var = pure Trie.AnyStr
 
 -- Generate 1-100 non-overlapping patterns
-genPatterns :: Gen [(Pattern, Int)]
+genPatterns :: Gen [(Pattern ByteString, Int)]
 genPatterns = do
     n <- choose (1, 100)
     r <- mapM (genPattern . C8.pack . show) [1..n]
     return $ r `zip` [1..n]
 
-genTrie :: Gen (Trie Int)
+genTrie :: Gen (Trie ByteString Int)
 genTrie = Trie.fromAssocList <$> genPatterns
 
