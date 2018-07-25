@@ -25,7 +25,7 @@
 -- These characteristics hint at the primary intended use-case, whereby
 -- keys have a "natural" decomposition into chunks and the same
 -- chunks are heavily shared by different keys, e.g. as in directory trees.
--- A pattern trie allows to associate values with such patterns, whereby a
+-- A pattern trie allows to associate values with simple patterns, whereby a
 -- single value can essentially be looked up by all strings matching a pattern,
 -- thereby capturing parts of it. Such a trie can thus form the basis of e.g. a
 -- web server routing mechanism for dispatching requests to handler functions
@@ -88,9 +88,8 @@ module Data.Trie.Pattern
     ( Trie, value
 
     -- * Patterns
-    , Pattern, Str, Matcher (..)
-    , apply, capture, (|>)
-    , Capture, captured
+    , Pattern, Str, Matcher (..), Capture (..)
+    , apply, capture, uncapture, (|>)
 
     -- * List conversion
     , fromAssocList
@@ -208,7 +207,7 @@ newtype Capture = Capture { captured :: ByteString }
 
 -- | A 'Matcher' is applied on a single chunk of an input 'Str'ing
 -- while looking for a 'match' and either /succeeds/ or /fails/. If it succeeds,
--- it may additionally capture (part of) the chunk.
+-- it may 'Capture' the chunk.
 data Matcher
     -- | Match and capture an arbitrary chunk of an input string.
     = AnyStr
@@ -235,6 +234,27 @@ capture :: Str -> Pattern -> Seq Capture
 capture s p = case apply s p of
     (_, c, _) -> c
 {-# INLINE capture #-}
+
+-- | Construct the longest input 'Str'ing matching a prefix of
+-- a given pattern, using the given captures to satisfy matchers.
+-- As long as there are enough captures to satisfy all matchers
+-- in the pattern, the resulting string will always be an exact
+-- match for the pattern (i.e. neither the string nor the pattern
+-- have an unmatched suffix when 'apply'ing the former to the latter).
+--
+-- Furthermore, if an input string @s@ is an exact match for a
+-- pattern @p@, then
+--
+-- @
+-- uncapture (capture s p) p == s
+-- @
+uncapture :: Seq Capture -> Pattern -> Str
+uncapture = go []
+  where
+    go !str _          Empty           = str
+    go !str Empty      (_ :|> AnyStr ) = str
+    go !str cs         (p :|> EqStr s) = go (s : str) cs p
+    go !str (cs :|> c) (p :|> AnyStr ) = go (captured c : str) cs p
 
 -----------------------------------------------------------------------------
 -- List conversion

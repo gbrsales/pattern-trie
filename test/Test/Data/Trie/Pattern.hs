@@ -44,6 +44,7 @@ tests = testGroup "Data.Trie.Pattern"
         [ testProperty "Identity" checkTraversableId
         , testProperty "Composition" checkTraversableComp
         ]
+    , testProperty "capture" checkCapture
     , testProperty "match" checkMatch
     , testProperty "match (overlapping)" checkMatchOverlapping
     , testProperty "match (partial overlap)" checkMatchPartialOverlap
@@ -62,8 +63,8 @@ tests = testGroup "Data.Trie.Pattern"
 -- Basic properties
 
 checkNull :: Property
-checkNull = once (null (mempty :: Trie Int)) .&&.
-            (forAll genTrie (not . null))
+checkNull = once (null (mempty :: Trie Int))
+    .&&. (forAll genTrie (not . null))
 
 checkValue :: Property
 checkValue = forAll genTrie $ \t ->
@@ -72,6 +73,15 @@ checkValue = forAll genTrie $ \t ->
 checkListConversion :: Property
 checkListConversion = forAll genTrie $ \t ->
     Trie.fromAssocList (Trie.toAssocList t) == t
+
+checkCapture :: Property
+checkCapture = forAll genPatternWithStr $ \(p, s) ->
+    let c = Trie.capture s p
+    in Trie.uncapture c p == s && Seq.length c == numCaps p
+  where
+    numCaps Seq.Empty       = 0
+    numCaps (AnyStr  :<| p) = 1 + numCaps p
+    numCaps (EqStr _ :<| p) =     numCaps p
 
 -------------------------------------------------------------------------------
 -- Properties of lookups and matching
@@ -237,6 +247,9 @@ checkTraversableComp = forAll genTrie $ \t ->
     f, g :: Int -> Maybe Int
     f x = Just (x + 1)
     g x = Just (x * 2)
+
+-------------------------------------------------------------------------------
+-- Generators
 
 genByteString :: Gen ByteString
 genByteString = C8.pack <$> listOf1 arbitraryASCIIChar
