@@ -91,8 +91,15 @@ module Data.Trie.Pattern
     ( Trie, value
 
     -- * Patterns
+    -- $definitions
     , Pattern, Str, Matcher (..), Capture (..)
-    , apply, capture, uncapture, (|>)
+    , apply
+    , applyCapture
+    , unapplyCapture
+    , applyMatch
+    , applyMatches
+    -- ** Re-exports
+    , (|>)
 
     -- * List conversion
     , fromAssocList
@@ -129,7 +136,7 @@ import Data.Foldable
 import Data.Hashable
 import Data.List (foldl')
 import Data.HashMap.Strict (HashMap)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import Data.Semigroup
 import Data.Sequence (Seq (..), (|>))
 import Data.Text (Text)
@@ -184,19 +191,28 @@ instance (Eq s, Hashable s) => Monoid (Trie s a) where
 -----------------------------------------------------------------------------
 -- Patterns
 
--- | A pattern is a sequence of 'Matcher's on (chunks of) strings of type @s@
--- and serves as a key in a pattern trie.
+-- $definitions
+-- __Definition (/(Full) Match/):__ A 'Str'ing is a (full) match for a
+-- 'Pattern', if all 'Matcher's in the pattern succeed and there is no excess
+-- input (i.e.  the string and the pattern are of the same length).
 --
--- __Overlapping Patterns:__
--- Two patterns @p@ and @p'@ with @p /= p'@, are /overlapping/ if there exists
--- an input 'Str'ing that is (fully) 'match'ed by both patterns. In that case,
--- for the input string in question, the preference is given by the partial
--- order @EqStr > AnyStr@ on the competing matchers, i.e. towards the more
--- specific pattern. For an input string with a proper prefix matching the
--- overlapping patterns, the preference is reversed, i.e. towards the more
--- general pattern. That is, in the latter case a 'match' naturally yields
--- 'Nothing', whereas 'matchPrefix' will match the more general pattern,
--- yielding the associated value and excess input.
+-- __Definition (/Overlapping Patterns/):__
+-- Two patterns @p@ and @p'@, with @p /= p'@, are /overlapping/ if there exists
+-- an input 'Str'ing that is matched by both patterns.
+
+-- | A pattern is a sequence of 'Matcher's and serves as a key in a pattern
+-- trie.
+--
+-- If two patterns are overlapping for an input string, the preference for
+-- a match is given by the partial order @EqStr > AnyStr@ on the competing
+-- matchers, i.e. towards the more specific pattern.
+--
+-- The preference for a prefix match is reversed, i.e. for an input string where
+-- only a proper prefix is a match for overlapping patterns, the preference
+-- is given by the partial order @AnyStr > EqStr@, i.e. towards the more general
+-- pattern. In this case a 'match' naturally yields 'Nothing', whereas
+-- 'matchPrefix' will match the more general pattern, yielding the associated
+-- value, captured chunks and excess input.
 type Pattern s = Seq (Matcher s)
 
 -- | A (chunked) input string to 'match' on a 'Pattern' in a trie.
@@ -221,7 +237,7 @@ data Matcher s
     | EqStr !s
     deriving (Eq, Show, Read)
 
--- | Directly apply a 'Str'ing to a 'Pattern', returning the unmatched
+-- | Apply a string to a pattern, returning the unmatched
 -- suffix of the pattern together with the captured chunks and the
 -- remaining (unmatched) suffix of the input string.
 apply :: Eq s => Str s -> Pattern s -> (Pattern s, Seq (Capture s), Str s)
@@ -235,32 +251,43 @@ apply = go Seq.empty
             then go cs s' p'
             else (pat, cs, str)
 
--- | Like 'apply' but only returns the captures.
-capture :: Eq s => Str s -> Pattern s -> Seq (Capture s)
-capture s p = case apply s p of
-    (_, c, _) -> c
-{-# INLINE capture #-}
+-- | Apply a string to a pattern, returning the captures iff
+-- the string is a (full) match for the pattern.
+applyMatch :: Eq s => Str s -> Pattern s -> Maybe (Seq (Capture s))
+applyMatch s p = case apply s p of
+    (Empty, cs, []) -> Just cs
+    _               -> Nothing
+{-# INLINE applyMatch #-}
 
--- | Construct the longest input 'Str'ing matching a prefix of
--- a given pattern, using the given captures to satisfy matchers.
--- As long as there are enough captures to satisfy all matchers
--- in the pattern, the resulting string will always be an exact
--- match for the pattern (i.e. neither the string nor the pattern
--- have an unmatched suffix when 'apply'ing the former to the latter).
+-- | Apply a string to a pattern, returning 'True' iff the string
+-- is a (full) match for the pattern.
+applyMatches :: Eq s => Str s -> Pattern s -> Bool
+applyMatches s = isJust . applyMatch s
+{-# INLINE applyMatches #-}
+
+-- | Apply a string to a pattern, returning the captures.
+applyCapture :: Eq s => Str s -> Pattern s -> Seq (Capture s)
+applyCapture s p = case apply s p of
+    (_, c, _) -> c
+{-# INLINE applyCapture #-}
+
+-- | Construct the longest input 'Str'ing matching a prefix of a pattern, using
+-- the given captures to satisfy matchers.  As long as there are enough captures
+-- to satisfy all matchers in the pattern, the resulting string will always be
+-- a (full) match for the pattern.
 --
--- Furthermore, if an input string @s@ is an exact match for a
--- pattern @p@, then
+-- Furthermore, if an input string @s@ is a (full) match for a pattern @p@, then
 --
 -- @
--- uncapture (capture s p) p == s
+-- unapplyCapture p (applyCapture s p) == Just s
 -- @
-uncapture :: Seq (Capture s) -> Pattern s -> Str s
-uncapture = go []
+unapplyCapture :: Pattern s -> Seq (Capture s) -> Str s
+unapplyCapture = go []
   where
-    go !str _          Empty           = str
-    go !str Empty      (_ :|> AnyStr ) = str
-    go !str cs         (p :|> EqStr s) = go (s : str) cs p
-    go !str (cs :|> c) (p :|> AnyStr ) = go (captured c : str) cs p
+    go !str Empty           _          = str
+    go !str (_ :|> AnyStr ) Empty      = str
+    go !str (p :|> EqStr s) cs         = go (s : str) p cs
+    go !str (p :|> AnyStr ) (cs :|> c) = go (captured c : str) p cs
 
 -----------------------------------------------------------------------------
 -- List conversion
@@ -332,9 +359,8 @@ lookupIter nextR = go
             EqStr s :<| p' -> maybe r' (go r' p') (HashMap.lookup s (strtries t))
 {-# INLINE lookupIter #-}
 
--- | Lookup the trie rooted at the longest prefix of a pattern for which
--- there are values in the trie, returning it together with the remaining
--- suffix of the pattern.
+-- | Lookup the trie rooted at the longest prefix of a pattern, returning it
+-- together with the remaining suffix of the pattern.
 lookupPrefixTrie :: (Eq s, Hashable s) => Pattern s -> Trie s a -> (Trie s a, Pattern s)
 lookupPrefixTrie p t = lookupIter nextR (t, Empty) p t
   where
@@ -376,7 +402,7 @@ matchIter nextR = go Seq.empty []
     go !cs !cps r str t =
         let !r' = nextR t cs str r
         in case str of
-            []     -> r'
+            []     -> if isJust (value t) then r' else backtrack r' cps
             (s:s') -> case HashMap.lookup s (strtries t) of
                 Just t' -> case vartrie t of
                     Nothing  -> go cs cps r' s' t'
@@ -386,15 +412,19 @@ matchIter nextR = go Seq.empty []
                         in go cs cps' r' s' t'
                 Nothing -> case vartrie t of
                     Just t' -> go (cs |> Capture s) cps r' s' t'
-                    -- Continue at the last choice point, if any
-                    Nothing -> case cps of
-                        []                         -> r'
-                        (Choice cs' ss' t' : cps') -> go cs' cps' r' ss' t'
+                    Nothing -> backtrack r' cps
+
+    -- Continue at the last choice point, if any
+    backtrack r [] = r
+    backtrack r (Choice cs' ss' t' : cps') = go cs' cps' r ss' t'
 {-# INLINE matchIter #-}
 
--- | Lookup the trie rooted at the longest matching prefix of the input string
--- for which there are values in the trie, returning it together with
--- any captured parts and the remaining (unmatched) suffix of the input string.
+-- | Lookup the trie rooted at the longest matching prefix of the input string,
+-- returning it together with any captured parts and the remaining (unmatched)
+-- suffix of the input string.
+--
+-- In particular, if the input string is a (full) match for a pattern, the
+-- returned trie is the subtrie that is rooted at the associated 'value'.
 matchPrefixTrie :: (Eq s, Hashable s) => Str s -> Trie s a -> (Trie s a, Seq (Capture s), Str s)
 matchPrefixTrie s t = matchIter nextR (t, Seq.empty, []) s t
   where

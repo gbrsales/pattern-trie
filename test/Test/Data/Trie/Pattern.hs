@@ -76,12 +76,7 @@ checkListConversion = forAll genTrie $ \t ->
 
 checkCapture :: Property
 checkCapture = forAll genPatternWithStr $ \(p, s) ->
-    let c = Trie.capture s p
-    in Trie.uncapture c p == s && Seq.length c == numCaps p
-  where
-    numCaps Seq.Empty       = 0
-    numCaps (AnyStr  :<| p) = 1 + numCaps p
-    numCaps (EqStr _ :<| p) =     numCaps p
+    Trie.unapplyCapture p (Trie.applyCapture s p) == s
 
 -------------------------------------------------------------------------------
 -- Properties of lookups and matching
@@ -93,7 +88,7 @@ checkMatch = forAll genPatterns check
         let t = Trie.fromAssocList patterns
         in conjoin . flip map patterns $ \(p, a) ->
             forAll (genStr p) $ \s ->
-                let c = Trie.capture s p
+                let c = Trie.applyCapture s p
                 in Trie.match s t == Just (a, c)
 
 checkMatchOverlapping :: Property
@@ -111,13 +106,16 @@ checkMatchPartialOverlap :: Property
 checkMatchPartialOverlap = forAll genPatternWithStr $ \(p, s) ->
     let -- A match for ../a/c requires backtracking from ../a/b
         -- to the choice point before ../a
-        p'  = p |> EqStr "a" |> EqStr "b" -- explored first
-        p'' = p |> AnyStr    |> EqStr "c" -- matches
+        pm  = p |> AnyStr    |> EqStr "c" -- matches
+        p'  = p |> EqStr "a" |> EqStr "b" -- explored first, no match
+        p'' = p |> EqStr "a" |> AnyStr |> AnyStr -- explored first, no match
         s'  = s ++ ["a","c"]
-        t   = Trie.fromAssocList [(p', 1), (p'', 2)] :: Trie ByteString Int
-        c   = Trie.capture s' p''
+        t   = Trie.fromAssocList [(p',  1), (pm, 2)] :: Trie ByteString Int
+        t'  = Trie.fromAssocList [(p'', 1), (pm, 2)] :: Trie ByteString Int
+        c   = Trie.applyCapture s' pm
     in
-        Trie.match s' t == Just (2, c)
+        Trie.match s' t  == Just (2, c) &&
+        Trie.match s' t' == Just (2, c)
 
 checkLookup :: Property
 checkLookup = forAll genPatterns check
@@ -161,7 +159,7 @@ checkMatchPrefix = forAll genPatternWithStr $ \(p, s) ->
         check ((px, a), sx) ~(t, props) =
             let
                 s' = drop (length sx) s
-                cs = Trie.capture sx px
+                cs = Trie.applyCapture sx px
                 ok = Trie.matchPrefix s t == Just (a, cs, s')
             in
                 (Trie.delete px t, ok : props)
