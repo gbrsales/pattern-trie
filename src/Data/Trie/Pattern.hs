@@ -192,13 +192,17 @@ instance (Eq s, Hashable s) => Monoid (Trie s a) where
 -- Patterns
 
 -- $definitions
+-- __Definition (/Prefix Match/):__ A 'Str'ing is a prefix match for a
+-- 'Pattern', if all 'Matcher's in the pattern succeed when applied on
+-- the chunks of the input string in sequence.
+--
 -- __Definition (/(Full) Match/):__ A 'Str'ing is a (full) match for a
--- 'Pattern', if all 'Matcher's in the pattern succeed and there is no excess
--- input (i.e.  the string and the pattern are of the same length).
+-- 'Pattern', if it is a prefix match and there is no excess
+-- input (i.e. the string and the pattern are of the same length).
 --
 -- __Definition (/Overlapping Patterns/):__
 -- Two patterns @p@ and @p'@, with @p /= p'@, are /overlapping/ if there exists
--- an input 'Str'ing that is matched by both patterns.
+-- an input 'Str'ing that is a (full) match for both patterns.
 
 -- | A pattern is a sequence of 'Matcher's and serves as a key in a pattern
 -- trie.
