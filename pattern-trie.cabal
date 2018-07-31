@@ -3,8 +3,8 @@ version:  0.1.0
 category: Data
 synopsis: Pattern tries
 description:
-    A simple pattern trie for structured keys, supporting capture
-    of (parts of) the input strings.
+    Simple pattern tries for structured keys, where lookups
+    can capture (parts of) the input strings.
 
 author: Roman S. Borschel
 maintainer: Roman S. Borschel <roman@pkaboo.org>
@@ -12,7 +12,7 @@ copyright: 2018 Roman S. Borschel
 license: MPL-2.0
 license-file: LICENSE
 
-cabal-version: >=1.10
+cabal-version: 1.18
 build-type: Simple
 extra-source-files: CHANGELOG.md
 extra-doc-files: docs-extra/*.png
