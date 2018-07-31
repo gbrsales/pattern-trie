@@ -1,3 +1,11 @@
 *.o
 *.hi
 dist-newstyle
+docs-extra/*.aux
+docs-extra/*.fdb*
+docs-extra/*.fls
+docs-extra/*.log
+docs-extra/*.pdf
+docs-extra/*.png
+tags
+.ghc.*

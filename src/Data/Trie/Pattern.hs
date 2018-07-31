@@ -2,35 +2,34 @@
 -- License, v. 2.0. If a copy of the MPL was not distributed with this
 -- file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
-{-# LANGUAGE DeriveGeneric
-           , DeriveAnyClass
-           , GeneralizedNewtypeDeriving
-           , DerivingStrategies
-           , BangPatterns
-           , TupleSections
+{-# LANGUAGE
+    BangPatterns
+  , DeriveGeneric
+  , DeriveAnyClass
+  , DerivingStrategies
+  , GeneralizedNewtypeDeriving
+  , TupleSections
 #-}
 
 -- | A variant of a (radix) trie with the following characteristics:
 --
---   * Keys are 'Pattern's composed of 'Matcher's and hence a single key
+--   * Keys are simple 'Pattern's composed of 'Matcher's and hence a single key
 --     can match multiple input 'Str'ings.
---   * Keys are understood as being composed of (indivisible) chunks of
---     strings of type @s@ (typically instantiated to either 'Text' or
---     'ByteString'). More precisely, every chunk of an input 'Str'ing is
---     tested against a 'Matcher' of a 'Pattern' in full. As a result,
---     pattern tries usually end up less compact than more general tries,
---     since sharing of prefixes is limited to the granularity of these
---     chunks.
---   * Matching a 'Str'ing on a trie can 'Capture' parts of the string.
+--   * Looking up a 'match' for a 'Str'ing can 'Capture' parts of the string.
+--   * Both patterns  and input strings are understood as being composed of
+--     (indivisible) chunks of strings of a generic type @s@ (typically
+--     instantiated to either 'Text' or 'ByteString'). More precisely, every
+--     chunk of an input 'Str'ing is tested against a 'Matcher' of a 'Pattern'
+--     in sequence. As a result, pattern tries usually end up less compact than
+--     more general tries, since sharing of prefixes as well as all operations
+--     are limited to the granularity of these chunks.
 --
 -- These characteristics hint at the primary intended use-case, whereby
--- keys have a "natural" decomposition into chunks and the same
+-- keys have a \"natural\" decomposition into chunks and the same
 -- chunks are heavily shared by different keys, e.g. as in directory trees.
 -- A pattern trie allows to associate values with simple patterns, whereby a
 -- single value can essentially be looked up by all strings matching a pattern,
--- thereby capturing parts of it. Such a trie can thus form the basis of e.g. a
--- web server routing mechanism for dispatching requests to handler functions
--- together with captured parameters, based on the request path in the URL.
+-- thereby capturing parts of it.
 --
 -- __Strictness:__
 -- A 'Trie' is strict in the spine as well as the values (WHNF).
@@ -93,13 +92,18 @@ module Data.Trie.Pattern
     -- * Patterns
     -- $definitions
     , Pattern, Str, Matcher (..), Capture (..)
+
+    -- ** Testing Patterns
+    , overlapping
+    , MatchOrd (..), MatchPrefixOrd (..)
+    , matchOrd, matchPrefixOrd
     , apply
     , applyCapture
     , unapplyCapture
     , applyMatch
     , applyMatches
-    -- ** Re-exports
-    , (|>)
+    , applyMatchPrefix
+    , applyMatchesPrefix
 
     -- * List conversion
     , fromAssocList
@@ -111,11 +115,13 @@ module Data.Trie.Pattern
     , delete
 
     -- * 'Pattern' lookup
+    -- $lookupBigO
     , lookup
     , lookupPrefix
     , lookupPrefixTrie
 
     -- * 'Str'ing matching
+    -- $matchingBigO
     , match
     , matchPrefix
     , matchPrefixTrie
@@ -124,6 +130,9 @@ module Data.Trie.Pattern
     , traverseWithKey
     , foldMapWithKey
     , foldrWithKey
+
+    -- * Re-exports
+    , (|>)
     ) where
 
 import GHC.Generics (Generic)
@@ -132,6 +141,7 @@ import Control.Applicative
 import Control.DeepSeq (NFData)
 import Control.Monad ((<$!>))
 import Data.ByteString (ByteString)
+import Data.Coerce (coerce)
 import Data.Foldable
 import Data.Hashable
 import Data.List (foldl')
@@ -192,31 +202,39 @@ instance (Eq s, Hashable s) => Monoid (Trie s a) where
 -- Patterns
 
 -- $definitions
--- __Definition (/Prefix Match/):__ A 'Str'ing is a prefix match for a
--- 'Pattern', if all 'Matcher's in the pattern succeed when applied on
--- the chunks of the input string in sequence.
+-- __Definition (/Prefix Match/):__ A 'Str'ing is a /prefix match/ for a
+-- 'Pattern', iff all 'Matcher's in the pattern succeed when applied on
+-- the chunks of the input string in sequence. A /proper prefix match/
+-- is a prefix match that is not a (full) match.
 --
--- __Definition (/(Full) Match/):__ A 'Str'ing is a (full) match for a
--- 'Pattern', if it is a prefix match and there is no excess
--- input (i.e. the string and the pattern are of the same length).
+--  A prefix match is witnessed by 'applyMatchesPrefix'.
+--
+-- __Definition (/(Full) Match/):__ A 'Str'ing is a /(full) match/ for a
+-- 'Pattern', iff it is a prefix match and there are no unmatched
+-- remaining chunks of the input (i.e. the string and the pattern have
+-- the same length).
+--
+--  A (full) match is witnessed by 'applyMatches'.
 --
 -- __Definition (/Overlapping Patterns/):__
--- Two patterns @p@ and @p'@, with @p /= p'@, are /overlapping/ if there exists
--- an input 'Str'ing that is a (full) match for both patterns.
+-- Two patterns are /overlapping/, iff they are not equal and
+-- there exists an input 'Str'ing that is a (full) match for both patterns.
+--
+-- Overlapping patterns are witnessed by 'overlapping'.
 
 -- | A pattern is a sequence of 'Matcher's and serves as a key in a pattern
 -- trie.
 --
 -- If two patterns are overlapping for an input string, the preference for
--- a match is given by the partial order @EqStr > AnyStr@ on the competing
--- matchers, i.e. towards the more specific pattern.
+-- a 'match' is given by the partial order @EqStr > AnyStr@ on the competing
+-- matchers, i.e. towards the more specific pattern. This partial order is
+-- witnessed and subsumed by the total order 'MatchOrd'.
 --
 -- The preference for a prefix match is reversed, i.e. for an input string where
 -- only a proper prefix is a match for overlapping patterns, the preference
 -- is given by the partial order @AnyStr > EqStr@, i.e. towards the more general
--- pattern. In this case a 'match' naturally yields 'Nothing', whereas
--- 'matchPrefix' will match the more general pattern, yielding the associated
--- value, captured chunks and excess input.
+-- pattern. This partial order is witnessed and subsumed by the total order
+-- 'PrefixMatchOrd'.
 type Pattern s = Seq (Matcher s)
 
 -- | A (chunked) input string to 'match' on a 'Pattern' in a trie.
@@ -239,11 +257,89 @@ data Matcher s
     = AnyStr
     -- | Match a chunk of an input string exactly, capturing nothing.
     | EqStr !s
-    deriving (Eq, Show, Read)
+    deriving stock (Eq, Show, Read, Generic)
+    deriving anyclass NFData
+
+-- | A total order for matchers that subsumes the partial order for
+-- the preference between overlapping patterns on a 'matchPrefix'.
+--
+-- >>> MatchPrefixOrd AnyStr > MatchPrefixOrd (EqStr "a")
+-- True
+--
+-- >>> let p1 = mempty |> EqStr "a" |> EqStr "b"
+-- >>> let p2 = mempty |> AnyStr    |> EqStr "b"
+-- >>> matchPrefixOrd p1 < matchPrefixOrd p2
+-- True
+newtype MatchPrefixOrd s = MatchPrefixOrd (Matcher s)
+    deriving Eq
+
+matchPrefixOrd :: Pattern s -> Seq (MatchPrefixOrd s)
+matchPrefixOrd = coerce
+
+-- | A total order for matchers that subsumes the partial order for
+-- the preference between overlapping patterns on a 'match'.
+--
+-- >>> MatchOrd AnyStr < MatchOrd (EqStr "a")
+-- True
+--
+-- >>> let p1 = mempty |> EqStr "a" |> EqStr "b"
+-- >>> let p2 = mempty |> AnyStr    |> EqStr "b"
+-- >>> matchOrd p1 > matchOrd p2
+-- True
+newtype MatchOrd s = MatchOrd (Matcher s)
+    deriving Eq
+
+matchOrd :: Pattern s -> Seq (MatchOrd s)
+matchOrd = coerce
+
+instance Ord s => Ord (MatchOrd s) where
+    compare (MatchOrd m1) (MatchOrd m2) =
+        compare (MatchPrefixOrd m2) (MatchPrefixOrd m1)
+
+instance Ord s => Ord (MatchPrefixOrd s) where
+    compare (MatchPrefixOrd m1) (MatchPrefixOrd m2) =
+        case (m1, m2) of
+            (AnyStr  ,  EqStr _) -> GT
+            (EqStr  _,   AnyStr) -> LT
+            (AnyStr  ,   AnyStr) -> EQ
+            (EqStr s1, EqStr s2) -> compare s1 s2
+
+-- | Check whether two patterns are overlapping, i.e. whether there
+-- exists a 'Str'ing that is a (full) match for both patterns.
+--
+-- >>> let p1 = mempty |> EqStr "a" |> AnyStr
+-- >>> let p2 = mempty |> AnyStr    |> EqStr "b"
+-- >>> let p3 = mempty |> EqStr "a" |> EqStr "c"
+-- >>> overlapping p1 p1
+-- False
+-- >>> overlapping p1 p2
+-- True
+-- >>> overlapping p1 p3
+-- True
+-- >>> overlapping p2 p3
+-- False
+overlapping :: Eq s => Pattern s -> Pattern s -> Bool
+overlapping p1 p2 = Seq.length p1 == Seq.length p2 && go True p1 p2
+  where
+    go eq Empty             Empty              = not eq
+    go _  Empty             _                  = False
+    go _  _                 Empty              = False
+    go _  (EqStr _ :<| p1') (AnyStr   :<| p2') = go False p1' p2'
+    go _  (AnyStr  :<| p1') (EqStr _  :<| p2') = go False p1' p2'
+    go eq (AnyStr  :<| p1') (AnyStr   :<| p2') = go eq    p1' p2'
+    go eq (EqStr s :<| p1') (EqStr s' :<| p2') =
+        if s /= s'
+            then False
+            else go eq p1' p2'
 
 -- | Apply a string to a pattern, returning the unmatched
 -- suffix of the pattern together with the captured chunks and the
 -- remaining (unmatched) suffix of the input string.
+--
+-- >>> let p = mempty |> EqStr "a" |> AnyStr |> EqStr "c"
+-- >>> let s = ["a", "b", "d"]
+-- >>> apply s p
+-- (fromList [EqStr "c"],fromList [Capture {captured = "b"}],["d"])
 apply :: Eq s => Str s -> Pattern s -> (Pattern s, Seq (Capture s), Str s)
 apply = go Seq.empty
   where
@@ -255,36 +351,32 @@ apply = go Seq.empty
             then go cs s' p'
             else (pat, cs, str)
 
--- | Apply a string to a pattern, returning the captures iff
--- the string is a (full) match for the pattern.
-applyMatch :: Eq s => Str s -> Pattern s -> Maybe (Seq (Capture s))
-applyMatch s p = case apply s p of
-    (Empty, cs, []) -> Just cs
-    _               -> Nothing
-{-# INLINE applyMatch #-}
-
--- | Apply a string to a pattern, returning 'True' iff the string
--- is a (full) match for the pattern.
-applyMatches :: Eq s => Str s -> Pattern s -> Bool
-applyMatches s = isJust . applyMatch s
-{-# INLINE applyMatches #-}
-
 -- | Apply a string to a pattern, returning the captures.
+--
+-- >>> let p = mempty |> EqStr "a" |> AnyStr |> EqStr "c"
+-- >>> let s = ["a", "b", "d"]
+-- >>> applyCapture s p
+-- fromList [Capture {captured = "b"}]
 applyCapture :: Eq s => Str s -> Pattern s -> Seq (Capture s)
 applyCapture s p = case apply s p of
     (_, c, _) -> c
 {-# INLINE applyCapture #-}
 
--- | Construct the longest input 'Str'ing matching a prefix of a pattern, using
--- the given captures to satisfy matchers.  As long as there are enough captures
--- to satisfy all matchers in the pattern, the resulting string will always be
--- a (full) match for the pattern.
+-- | (Re)Construct the longest input 'Str'ing matching a prefix of a pattern,
+-- using the given captures to satisfy matchers.  As long as there are enough
+-- captures to satisfy all matchers in the pattern, the resulting string will
+-- always be a (full) match for the pattern.
 --
 -- Furthermore, if an input string @s@ is a (full) match for a pattern @p@, then
 --
 -- @
--- unapplyCapture p (applyCapture s p) == Just s
+-- unapplyCapture p (applyCapture s p) == s
 -- @
+--
+-- >>> let p = mempty |> EqStr "a" |> AnyStr |> EqStr "c"
+-- >>> let s = ["a", "b", "c"]
+-- >>> unapplyCapture p (applyCapture s p)
+-- ["a","b","c"]
 unapplyCapture :: Pattern s -> Seq (Capture s) -> Str s
 unapplyCapture = go []
   where
@@ -293,10 +385,47 @@ unapplyCapture = go []
     go !str (p :|> EqStr s) cs         = go (s : str) p cs
     go !str (p :|> AnyStr ) (cs :|> c) = go (captured c : str) p cs
 
+-- | Apply a string to a pattern, returning the captures iff
+-- the string is a (full) match for the pattern.
+--
+-- >>> let p = mempty |> EqStr "a" |> AnyStr |> EqStr "c"
+-- >>> applyMatch ["a", "b", "c", "d"] p
+-- Nothing
+-- >>> applyMatch ["a", "b", "c"] p
+-- Just (fromList [Capture {captured = "b"}])
+applyMatch :: Eq s => Str s -> Pattern s -> Maybe (Seq (Capture s))
+applyMatch s p = case apply s p of
+    (Empty, cs, []) -> Just cs
+    _               -> Nothing
+
+-- | Apply a string to a pattern, returning 'True' iff the string
+-- is a (full) match for the pattern.
+applyMatches :: Eq s => Str s -> Pattern s -> Bool
+applyMatches s = isJust . applyMatch s
+
+-- | Apply a string to a pattern, returning the captures iff
+-- the string is a prefix match for the pattern.
+--
+-- >>> let p = mempty |> EqStr "a" |> AnyStr |> EqStr "c"
+-- >>> applyMatchPrefix ["a", "b", "c", "d"] p
+-- Just (fromList [Capture {captured = "b"}])
+applyMatchPrefix :: Eq s => Str s -> Pattern s -> Maybe (Seq (Capture s))
+applyMatchPrefix s p = case apply s p of
+    (Empty, cs, _) -> Just cs
+    _              -> Nothing
+
+-- | Apply a string to a pattern, returning 'True' iff the string
+-- is a prefix match for the pattern.
+applyMatchesPrefix:: Eq s => Str s -> Pattern s -> Bool
+applyMatchesPrefix s = isJust . applyMatchPrefix s
+
 -----------------------------------------------------------------------------
 -- List conversion
 
 -- | Create a pattern trie from a list of patterns and associated values.
+--
+-- \(\mathcal{O}(n \cdot k)\), where \(n\) is the length of the list and
+-- \(k\) is the length of the longest pattern in the list.
 fromAssocList :: (Eq s, Hashable s) => [(Pattern s, a)] -> Trie s a
 fromAssocList = foldl' add mempty
   where
@@ -304,6 +433,9 @@ fromAssocList = foldl' add mempty
 {-# INLINE fromAssocList #-}
 
 -- | Create a list of patterns and associated values from a pattern trie.
+--
+-- \(\mathcal{O}(n \cdot k)\), where \(n\) is the number of values in the trie
+-- and \(k\) is the length of the longest pattern in the trie.
 toAssocList :: (Eq s, Hashable s) => Trie s a -> [(Pattern s, a)]
 toAssocList t = foldrWithKey (\p a l -> (p, a) : l) [] t
 {-# INLINE toAssocList #-}
@@ -312,18 +444,22 @@ toAssocList t = foldrWithKey (\p a l -> (p, a) : l) [] t
 -- Updates
 
 -- | Insert the value for the given pattern into the trie.
+--
+-- \(\mathcal{O}(k)\), where \(k\) is the length of the pattern.
 insert :: (Eq s, Hashable s) => Pattern s -> a -> Trie s a -> Trie s a
 insert p !a = go p
   where
     go Empty            = modVal (const (Just a))
     go (AnyStr  :<| p') = modVar ((Just $!) . go p' . fromMaybe mempty)
     go (EqStr s :<| p') = modStr $ \m ->
-        let t' = fromMaybe mempty (HashMap.lookup s m)
+        let t' = HashMap.lookupDefault mempty s m
         in HashMap.insert s (go p' t') m
 {-# SPECIALISE insert :: BPattern -> a -> BTrie a -> BTrie a #-}
 {-# SPECIALISE insert :: TPattern -> a -> TTrie a -> TTrie a #-}
 
 -- | Update the value of the given pattern in the trie, if it exists.
+--
+-- \(\mathcal{O}(k)\), where \(k\) is the length of the pattern.
 adjust :: (Eq s, Hashable s) => Pattern s -> (a -> a) -> Trie s a -> Trie s a
 adjust p f = go p
   where
@@ -334,6 +470,8 @@ adjust p f = go p
 {-# SPECIALISE adjust :: TPattern -> (a -> a) -> TTrie a -> TTrie a #-}
 
 -- | Remove the value for the given pattern from the trie, if it exists.
+--
+-- \(\mathcal{O}(k)\), where \(k\) is the length of the pattern.
 delete :: (Eq s, Hashable s) => Pattern s -> Trie s a -> Trie s a
 delete p = go p
   where
@@ -349,6 +487,10 @@ delete p = go p
 
 -----------------------------------------------------------------------------
 -- Lookups
+
+-- $lookupBigO
+-- ===Time Complexity (successful lookups)
+-- \(\Theta(k)\), where \(k\) is the length of the pattern.
 
 type LookupNextR r s a = Trie s a -> Pattern s -> r -> r
 
@@ -394,6 +536,41 @@ lookup p t = case lookupPrefixTrie p t of
 
 -----------------------------------------------------------------------------
 -- Matching
+
+-- $matchingBigO
+-- ===Time Complexity (successful matches)
+-- In what follows \(k\) is always the length of the input string (i.e. the
+-- number of chunks).
+--
+-- __/Best case/__: \(\Theta(k)\), when the input string matches the most
+-- specific pattern in the trie (i.e. with the least captures) from all those
+-- that have a matching prefix for the string.
+--
+-- __/Worst case/__: \(\mathcal{O}(2^k)\), when there are \(2^{k-1}\) distinct
+-- patterns of length at least \(k\) in the trie, all of which have a prefix of
+-- length \(k-1\) that is a prefix match for the input string, but none except
+-- for the most general of them are an actual (full) match. This is a
+-- pathological case that comes about from backtracking to more general patterns
+-- and is illustrated in an example with \(k=3\) for the input string
+-- @["a","a","b"]@ below.
+--
+-- <<docs-extra/backtrack.png>>
+--
+-- Nodes with values are filled, choice points are blue, dead ends are red and
+-- dashed lines indicate backtracking.  The above trie contains the keys
+-- (patterns)
+--
+--   * @mempty |> EqStr "a" |> EqStr "a" |> EqStr "a"@
+--   * @mempty |> EqStr "a" |> AnyStr    |> EqStr "a"@
+--   * @mempty |> AnyStr    |> EqStr "a" |> EqStr "a"@
+--   * @mempty |> AnyStr    |> AnyStr    |> EqStr "b"@
+--
+-- with some arbitrary values. The paths are explored left-to-right in a
+-- depth-first search. The number of steps for a match in the worst case is more
+-- accurately approximated by
+-- \[ \underbrace{2^k - 1}_{\text{downwards searching}} + \underbrace{2^{k-1} - 1}_{\text{upwards backtracking}} \]
+-- Dropping the asymptotically insignificant constants and lower terms yields the
+-- bound.  For realistic values of \(k\), however, the difference matters.
 
 -- | A choice point for backtracking to alternative branches.
 data Choice s a = Choice !(Seq (Capture s)) (Str s) !(Trie s a)
@@ -451,9 +628,10 @@ matchPrefix s t = matchIter nextR Nothing s t
 -- a trie. The value of the matching pattern, if any, is returned together with
 -- any captured parts of the input string. If the input string does not match
 -- any pattern in the trie, the result is 'Nothing'.
+--
 match :: (Eq s, Hashable s) => Str s -> Trie s a -> Maybe (a, Seq (Capture s))
 match s t = case matchPrefixTrie s t of
-    (t', cs, []) -> (,cs) <$> value t'
+    (t', cs, []) -> (,cs) <$!> value t'
     _            -> Nothing
 {-# INLINE match #-}
 

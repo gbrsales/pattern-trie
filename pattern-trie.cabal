@@ -15,6 +15,7 @@ license-file: LICENSE
 cabal-version: >=1.10
 build-type: Simple
 extra-source-files: CHANGELOG.md
+extra-doc-files: docs-extra/*.png
 
 source-repository head
     type: git

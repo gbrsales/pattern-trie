@@ -45,6 +45,7 @@ tests = testGroup "Data.Trie.Pattern"
         , testProperty "Composition" checkTraversableComp
         ]
     , testProperty "capture" checkCapture
+    , testProperty "overlapping" checkOverlapping
     , testProperty "match" checkMatch
     , testProperty "match (overlapping)" checkMatchOverlapping
     , testProperty "match (partial overlap)" checkMatchPartialOverlap
@@ -75,8 +76,16 @@ checkListConversion = forAll genTrie $ \t ->
     Trie.fromAssocList (Trie.toAssocList t) == t
 
 checkCapture :: Property
-checkCapture = forAll genPatternWithStr $ \(p, s) ->
+checkCapture = forAll genPatternMatch $ \(p, s) ->
     Trie.unapplyCapture p (Trie.applyCapture s p) == s
+
+checkOverlapping :: Property
+checkOverlapping = forAll genTwinPatterns $ \(p1, p2) ->
+        -- Irreflexive
+        not (Trie.overlapping p1 p1)
+        .&&.
+        -- Symmetric
+        (Trie.overlapping p1 p2 ==> Trie.overlapping p2 p1)
 
 -------------------------------------------------------------------------------
 -- Properties of lookups and matching
@@ -92,30 +101,38 @@ checkMatch = forAll genPatterns check
                 in Trie.match s t == Just (a, c)
 
 checkMatchOverlapping :: Property
-checkMatchOverlapping = forAll genPatternWithStr $ \(p, s) ->
+checkMatchOverlapping = forAll genPatternMatch $ \(p, s) ->
     let -- Overlaps with 'p' w.r.t 's'
         p' = Seq.fromList (map Trie.EqStr s)
         t  = Trie.fromAssocList [(p, 1), (p', 2)] :: Trie ByteString Int
+        c  = Trie.applyCapture s p
     in
-        Trie.match s t == Just (2, Seq.empty)
+        (Trie.match s t == Just (2, Seq.empty))
+        .&&.
+        (Trie.matchPrefix s t == Just (2, Seq.empty, []))
+        .&&.
+        (p /= p' ==> Trie.overlapping p p')
+        .&&.
+        (p /= p' ==> Trie.matchOrd p' > Trie.matchOrd p)
+        .&&.
+        (p /= p' ==> Trie.matchPrefix (s ++ ["x"]) t == Just (1, c, ["x"])
+                    && Trie.matchPrefixOrd p > Trie.matchPrefixOrd p')
 
 -- Partially overlapping patterns (i.e. those with an overlapping
 -- proper prefix) are not ambiguous but require backtracking via
 -- choice points, since the more specific path is explored first.
 checkMatchPartialOverlap :: Property
-checkMatchPartialOverlap = forAll genPatternWithStr $ \(p, s) ->
-    let -- A match for ../a/c requires backtracking from ../a/b
-        -- to the choice point before ../a
+checkMatchPartialOverlap = forAll genPatternMatch $ \(p, s) ->
+    let -- A match for ../a/c requires backtracking to the choice point
+        -- before ../a, since the /a/.. branches are explored first.
         pm  = p |> AnyStr    |> EqStr "c" -- matches
-        p'  = p |> EqStr "a" |> EqStr "b" -- explored first, no match
-        p'' = p |> EqStr "a" |> AnyStr |> AnyStr -- explored first, no match
+        p'  = p |> EqStr "a" |> EqStr "b" -- no match but explored first
+        p'' = p |> EqStr "a" |> AnyStr |> AnyStr -- no match but explored first
         s'  = s ++ ["a","c"]
-        t   = Trie.fromAssocList [(p',  1), (pm, 2)] :: Trie ByteString Int
-        t'  = Trie.fromAssocList [(p'', 1), (pm, 2)] :: Trie ByteString Int
+        t   = Trie.fromAssocList [(p',  1), (pm, 2), (p'', 3)] :: Trie ByteString Int
         c   = Trie.applyCapture s' pm
     in
-        Trie.match s' t  == Just (2, c) &&
-        Trie.match s' t' == Just (2, c)
+        Trie.match s' t == Just (2, c)
 
 checkLookup :: Property
 checkLookup = forAll genPatterns check
@@ -131,7 +148,7 @@ checkLookup = forAll genPatterns check
 -- verifying that 'lookupPrefix' yields the right value and
 -- remaining suffix.
 checkLookupPrefix :: Property
-checkLookupPrefix = forAll (genPattern "") $ \p ->
+checkLookupPrefix = forAll (genPattern Nothing) $ \p ->
     let
         patterns = toList (Seq.inits p) `zip` [(1::Int)..]
         trie     = Trie.fromAssocList patterns
@@ -151,7 +168,7 @@ checkLookupPrefix = forAll (genPattern "") $ \p ->
 -- matching the entire pattern yields the right value, captured
 -- chunks and remaining suffix.
 checkMatchPrefix :: Property
-checkMatchPrefix = forAll genPatternWithStr $ \(p, s) ->
+checkMatchPrefix = forAll genPatternMatch $ \(p, s) ->
     let
         patterns = toList (Seq.inits p) `zip` [(1::Int)..]
         trie     = Trie.fromAssocList patterns
@@ -171,7 +188,7 @@ checkMatchPrefix = forAll genPatternWithStr $ \(p, s) ->
 
 checkInsert :: Property
 checkInsert = forAll genTrie $ \t ->
-    forAll (genPattern =<< genByteString) $ \p ->
+    forAll (genPattern Nothing) $ \p ->
         let t' = Trie.insert p 42 t
         in Trie.lookup p t' == Just 42
 
@@ -201,7 +218,7 @@ checkAdjust = forAll genTrie $ \t ->
 
 checkSemigroupLeftPref :: Property
 checkSemigroupLeftPref = forAll genTrie $ \t ->
-    forAll (genPattern =<< genByteString) $ \p ->
+    forAll (genPattern Nothing) $ \p ->
         let t'  = Trie.insert p 1 t
             t'' = Trie.insert p 2 t
         in (t' <> t'') == t'
@@ -259,17 +276,24 @@ genStr p = mapM gen (toList p)
     gen  Trie.AnyStr   = genByteString
     gen (Trie.EqStr s) = pure s
 
-genPattern :: ByteString -> Gen (Pattern ByteString)
+genPattern :: Maybe ByteString -> Gen (Pattern ByteString)
 genPattern prefix = do
     n <- choose (1, 10)
     s <- vectorOf n genMatcher
-    return $ Seq.fromList (Trie.EqStr prefix : s)
+    return $ Seq.fromList (maybe s ((:s) . Trie.EqStr) prefix)
+
+-- | Generate two (possibly overlapping) patterns of the same length.
+genTwinPatterns :: Gen (Pattern ByteString, Pattern ByteString)
+genTwinPatterns = do
+    p1 <- genPattern Nothing
+    p2 <- Seq.fromList <$> vectorOf (Seq.length p1) genMatcher
+    return (p1, p2)
 
 -- Generate an arbitrary pattern together with a matching
 -- input string.
-genPatternWithStr :: Gen (Pattern ByteString, Str ByteString)
-genPatternWithStr = do
-    p <- genPattern ""
+genPatternMatch :: Gen (Pattern ByteString, Str ByteString)
+genPatternMatch = do
+    p <- genPattern Nothing
     s <- genStr p
     return (p, s)
 
@@ -283,7 +307,7 @@ genMatcher = oneof [str, var]
 genPatterns :: Gen [(Pattern ByteString, Int)]
 genPatterns = do
     n <- choose (1, 100)
-    r <- mapM (genPattern . C8.pack . show) [1..n]
+    r <- mapM (genPattern . Just . C8.pack . show) [1..n]
     return $ r `zip` [1..n]
 
 genTrie :: Gen (Trie ByteString Int)
