@@ -445,7 +445,7 @@ toAssocList t = foldrWithKey (\p a l -> (p, a) : l) [] t
 
 -- | Insert the value for the given pattern into the trie.
 --
--- \(\mathcal{O}(k)\), where \(k\) is the length of the pattern.
+-- \(\Theta(k)\), where \(k\) is the length of the pattern.
 insert :: (Eq s, Hashable s) => Pattern s -> a -> Trie s a -> Trie s a
 insert p !a = go p
   where
