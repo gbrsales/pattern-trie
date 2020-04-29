@@ -9,3 +9,4 @@ docs-extra/*.pdf
 docs-extra/*.png
 tags
 .ghc.*
+.stack-work/
