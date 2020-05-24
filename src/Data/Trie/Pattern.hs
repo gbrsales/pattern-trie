@@ -7,7 +7,6 @@
   , DeriveGeneric
   , DeriveAnyClass
   , DerivingStrategies
-  , GeneralizedNewtypeDeriving
   , TupleSections
 #-}
 
@@ -155,6 +154,8 @@ import Prelude hiding (lookup)
 import qualified Data.HashMap.Strict as HashMap
 import qualified Data.Sequence       as Seq
 import qualified Data.Traversable    as Traversable
+
+-- {-# ANN module "HLint: ignore Eta reduce" #-}
 
 -- | An unordered map from 'Pattern's of strings of type @s@ to values
 -- of type @a@.
@@ -327,10 +328,7 @@ overlapping p1 p2 = Seq.length p1 == Seq.length p2 && go True p1 p2
     go _  (EqStr _ :<| p1') (AnyStr   :<| p2') = go False p1' p2'
     go _  (AnyStr  :<| p1') (EqStr _  :<| p2') = go False p1' p2'
     go eq (AnyStr  :<| p1') (AnyStr   :<| p2') = go eq    p1' p2'
-    go eq (EqStr s :<| p1') (EqStr s' :<| p2') =
-        if s /= s'
-            then False
-            else go eq p1' p2'
+    go eq (EqStr s :<| p1') (EqStr s' :<| p2') = s == s' && go eq p1' p2'
 
 -- | Apply a string to a pattern, returning the unmatched
 -- suffix of the pattern together with the captured chunks and the

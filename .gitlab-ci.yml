@@ -11,6 +11,24 @@ before_script:
   - apt -qq update
   - cabal update
 
+test:8.10:
+  image: haskell:8.10
+  script:
+    - cabal --store-dir=$STORE_DIR build
+    - cabal --store-dir=$STORE_DIR test
+
+test:8.8:
+  image: haskell:8.8
+  script:
+    - cabal --store-dir=$STORE_DIR build
+    - cabal --store-dir=$STORE_DIR test
+
+test:8.6:
+  image: haskell:8.6
+  script:
+    - cabal --store-dir=$STORE_DIR new-build
+    - cabal --store-dir=$STORE_DIR new-test
+
 test:8.4:
   image: haskell:8.4
   script:

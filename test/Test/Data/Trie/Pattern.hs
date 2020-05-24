@@ -3,9 +3,7 @@
 -- file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 {-# LANGUAGE CPP #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TupleSections #-}
 
 module Test.Data.Trie.Pattern (tests) where
 
@@ -15,12 +13,9 @@ import Data.Foldable
 import Data.Functor.Identity
 import Data.Functor.Compose
 import Data.List (inits)
-#if __GLASGOW_HASKELL__ < 804
-import Data.Semigroup
-#endif
 import Data.Sequence (Seq (..))
 import Data.Trie.Pattern
-import Test.Tasty
+import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.QuickCheck
 
 import qualified Data.ByteString.Char8 as C8
