@@ -40,8 +40,8 @@ library
       , bytestring           >= 0.10  && < 1.0
       , containers           >= 0.5.7 && < 0.7
       , deepseq              >= 1.4.3 && < 1.5
-      , hashable             >= 1.2   && < 1.4
-      , text                 >= 1.0   && < 2.0
+      , hashable             >= 1.2   && < 1.5
+      , text                 >= 1.0   && < 2.1
       , unordered-containers >= 0.2   && < 0.3
 
 test-suite tests
