@@ -143,7 +143,6 @@ import Data.ByteString (ByteString)
 import Data.Coerce (coerce)
 import Data.Foldable
 import Data.Hashable
-import Data.List (foldl')
 import Data.HashMap.Strict (HashMap)
 import Data.Maybe (fromMaybe, isJust)
 import Data.Semigroup
@@ -675,4 +674,3 @@ type TTrie a = Trie Text a
 type TStr = Str Text
 type TCapture = Capture Text
 type TPattern = Pattern Text
-

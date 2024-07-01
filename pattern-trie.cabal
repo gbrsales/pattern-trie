@@ -1,5 +1,5 @@
 name:     pattern-trie
-version:  0.1.1
+version:  0.1.1.1
 category: Data
 synopsis: Pattern tries
 description:
@@ -36,7 +36,7 @@ library
         -- -dno-suppress-type-signatures
         -- -dno-suppress-idinfo
     build-depends:
-        base                 >= 4.10  && < 5
+        base                 >= 4.18  && < 5
       , bytestring           >= 0.10  && < 1.0
       , containers           >= 0.5.7 && < 0.7
       , deepseq              >= 1.4.3 && < 1.5
