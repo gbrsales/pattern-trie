@@ -15,7 +15,6 @@ license-file: LICENSE
 cabal-version: 1.18
 build-type: Simple
 extra-source-files: CHANGELOG.md, docs-extra/*.tex
-extra-doc-files: docs-extra/*.png
 
 source-repository head
     type: git
@@ -40,7 +39,7 @@ library
       , bytestring           >= 0.10  && < 1.0
       , containers           >= 0.5.7 && < 0.7
       , deepseq              >= 1.4.3 && < 1.5
-      , hashable             >= 1.2   && < 1.5
+      , hashable             >= 1.2   && < 1.6
       , text                 >= 1.0   && < 2.1
       , unordered-containers >= 0.2   && < 0.3
 
